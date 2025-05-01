@@ -5,9 +5,9 @@ import sqlite3
 import os
 import asyncio
 import logging
-from asgiref.sync import async_to_sync
 import random
 import time
+import threading
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -457,14 +457,16 @@ async def initialize_app():
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук (синхронний)
+# Вебхук (асинхронний)
 @app.route("/webhook", methods=["POST"])
-@async_to_sync
 async def webhook():
     try:
         update = Update.de_json(request.get_json(), bot)
         if update:
-            await app_telegram.process_update(update)
+            # Виконуємо асинхронну обробку в потоці
+            loop = asyncio.get_event_loop()
+            future = asyncio.run_coroutine_threadsafe(app_telegram.process_update(update), loop)
+            future.result()  # Чекаємо завершення
         return {"ok": True}
     except Exception as e:
         logger.error(f"Webhook error: {e}")

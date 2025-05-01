@@ -2,7 +2,12 @@ from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 import sqlite3
-from config import TELEGRAM_TOKEN, ADMIN_IDS, DATABASE_URL
+import os
+import ast
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ADMIN_IDS = ast.literal_eval(os.environ.get("ADMIN_IDS", "[]"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
 
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)

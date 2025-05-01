@@ -1,19 +1,20 @@
-from flask import Flask, request
-from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-import sqlite3
-import os
 import asyncio
 import logging
+import os
 import random
+import sqlite3
 import time
-import threading
+from aiohttp import web
+from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.request import HTTPXRequest
+import httpx
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Локальні налаштування (для локального запуску)
+# Локальні налаштування
 try:
     from config import TELEGRAM_TOKEN, Vadym_ID, Nazar_ID, DATABASE_URL
 except ImportError:
@@ -30,12 +31,17 @@ except ImportError:
 ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
 logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 
-# Ініціалізація Flask і Telegram Bot
-app = Flask(__name__)
-bot = Bot(token=TELEGRAM_TOKEN)
+# Налаштування HTTPX із більшим пулом з’єднань
+request = HTTPXRequest(
+    connection_pool_size=100,
+    http_version="1.1",
+    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+    timeout=30.0
+)
 
-# Ініціалізація Application
-app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
+# Ініціалізація Telegram Bot і Application
+bot = Bot(token=TELEGRAM_TOKEN, request=request)
+app_telegram = Application.builder().token(TELEGRAM_TOKEN).request(request).build()
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -453,29 +459,30 @@ async def initialize_app():
     await bot.initialize()
     await app_telegram.initialize()
 
-# Викликаємо ініціалізацію при запуску
-loop = asyncio.get_event_loop()
-loop.run_until_complete(initialize_app())
-
-# Вебхук (асинхронний)
-@app.route("/webhook", methods=["POST"])
-async def webhook():
+# Асинхронний вебхук із aiohttp
+async def webhook(request):
     try:
-        update = Update.de_json(request.get_json(), bot)
+        data = await request.json()
+        update = Update.de_json(data, bot)
         if update:
-            # Виконуємо асинхронну обробку в потоці
-            loop = asyncio.get_event_loop()
-            future = asyncio.run_coroutine_threadsafe(app_telegram.process_update(update), loop)
-            future.result()  # Чекаємо завершення
-        return {"ok": True}
+            await app_telegram.process_update(update)
+        return web.json_response({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return {"ok": False}, 500
+        return web.json_response({"ok": False}, status=500)
 
 # Health check для UptimeRobot
-@app.route("/health")
-def health():
-    return {"status": "ok"}
+async def health(request):
+    return web.json_response({"status": "ok"})
 
+# Налаштування aiohttp серверу
+app = web.Application()
+app.router.add_post("/webhook", webhook)
+app.router.add_get("/health", health)
+
+# Запуск сервера
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(initialize_app())
+    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

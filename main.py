@@ -1,16 +1,21 @@
 from flask import Flask, request
 from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import sqlite3
 import os
-import ast
 import asyncio
-from asgiref.sync import async_to_sync
 
-# Налаштування змінних середовища
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ADMIN_IDS = ast.literal_eval(os.environ.get("ADMIN_IDS", "[]"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
+# Локальні налаштування (для локального запуску)
+try:
+    from config import TELEGRAM_TOKEN, Vadym_ID, Nazar_ID, DATABASE_URL
+except ImportError:
+    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+    Vadym_ID = int(os.environ.get("Vadym_ID", 0))
+    Nazar_ID = int(os.environ.get("Nazar_ID", 0))
+    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
+
+# Список адмінів
+ADMIN_IDS = [Vadym_ID, Nazar_ID]
 
 # Ініціалізація Flask і Telegram Bot
 app = Flask(__name__)
@@ -26,7 +31,7 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
-        character_name TEXT
+        character_name TEXT UNIQUE
     )""")
     conn.commit()
     conn.close()
@@ -50,7 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт."
     )
 
-# Створення акаунта
+# Команда /create_account
 async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_maintenance(update, context):
         return
@@ -59,22 +64,57 @@ async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if c.fetchone():
-        await update.message.reply_text("Ти вже маєш акаунт!")
+        await update.message.reply_text("Ти вже маєш акаунт! Використай /delete_account, щоб видалити його.")
         conn.close()
         return
-    args = context.args
-    if len(args) < 1:
-        await update.message.reply_text("Вкажи ім'я персонажа: /create_account <ім'я>")
+    context.user_data["awaiting_character_name"] = True
+    await update.message.reply_text("Введи ім'я персонажа (нік у грі):")
+    conn.close()
+
+# Обробка текстового вводу для імені персонажа
+async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_character_name"):
+        return
+    if not await check_maintenance(update, context):
+        return
+    user_id = update.effective_user.id
+    character_name = update.message.text.strip()
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT character_name FROM users WHERE character_name = ?", (character_name,))
+    if c.fetchone():
+        await update.message.reply_text("Цей нік уже зайнятий. Вибери інший.")
         conn.close()
         return
-    character_name = " ".join(args)
-    c.execute(
-        "INSERT INTO users (user_id, username, character_name) VALUES (?, ?, ?)",
-        (user_id, update.effective_user.username, character_name),
-    )
+    try:
+        c.execute(
+            "INSERT INTO users (user_id, username, character_name) VALUES (?, ?, ?)",
+            (user_id, update.effective_user.username, character_name),
+        )
+        conn.commit()
+        await update.message.reply_text(f"Акаунт створено! Персонаж: {character_name}")
+    except sqlite3.IntegrityError:
+        await update.message.reply_text("Цей нік уже зайнятий. Вибери інший.")
+    finally:
+        conn.close()
+        context.user_data["awaiting_character_name"] = False
+
+# Команда /delete_account
+async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_maintenance(update, context):
+        return
+    user_id = update.effective_user.id
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    if not c.fetchone():
+        await update.message.reply_text("У тебе немає акаунта!")
+        conn.close()
+        return
+    c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
-    await update.message.reply_text(f"Акаунт створено! Персонаж: {character_name}")
+    await update.message.reply_text("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
 
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,6 +148,8 @@ async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Додаємо обробники команд
 app_telegram.add_handler(CommandHandler("start", start))
 app_telegram.add_handler(CommandHandler("create_account", create_account))
+app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_character_name))
+app_telegram.add_handler(CommandHandler("delete_account", delete_account))
 app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
@@ -121,9 +163,8 @@ async def initialize_app():
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук (синхронний)
+# Вебхук (асинхронний)
 @app.route("/webhook", methods=["POST"])
-@async_to_sync
 async def webhook():
     try:
         update = Update.de_json(request.get_json(), bot)

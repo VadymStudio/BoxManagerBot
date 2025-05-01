@@ -31,7 +31,7 @@ ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
 logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 
 # Налаштування HTTPX із більшим пулом з’єднань
-request = HTTPXRequest(
+telegram_request = HTTPXRequest(
     connection_pool_size=100
 )
 
@@ -39,8 +39,8 @@ request = HTTPXRequest(
 app = Flask(__name__)
 
 # Ініціалізація Telegram Bot і Application
-bot = Bot(token=TELEGRAM_TOKEN, request=request)
-app_telegram = Application.builder().token(TELEGRAM_TOKEN).request(request).build()
+bot = Bot(token=TELEGRAM_TOKEN, request=telegram_request)
+app_telegram = Application.builder().token(TELEGRAM_TOKEN).request(telegram_request).build()
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -462,7 +462,7 @@ app_telegram.add_handler(CommandHandler("create_account", create_account))
 app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_character_name))
 app_telegram.add_handler(CallbackQueryHandler(handle_fighter_type, pattern="^(swarmer|out_boxer|counter_puncher)$"))
 app_telegram.add_handler(CallbackQueryHandler(handle_fight_action, pattern="^fight_"))
-app_telegram.add_handler(CommandHandler("start_match", start_match))
+app_telegram.add_handler(CommandHandler("start_match", bank_match))
 app_telegram.add_handler(CommandHandler("delete_account", delete_account))
 app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
@@ -490,18 +490,32 @@ def webhook():
 def health():
     return jsonify({"status": "ok"})
 
+# Синхронне відключення вебхука
+def disable_webhook_sync():
+    try:
+        response = httpx.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook")
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook disabled successfully (sync)")
+        else:
+            logger.error(f"Failed to disable webhook (sync): {result}")
+    except Exception as e:
+        logger.error(f"Failed to disable webhook (sync): {e}")
+
 # Ініціалізація та запуск polling
 if __name__ == "__main__":
     import asyncio
-    async def disable_webhook():
+    disable_webhook_sync()  # Синхронне відключення вебхука
+    async def init_bot():
         try:
-            await bot.delete_webhook()
-            logger.info("Webhook disabled successfully")
+            await bot.delete_webhook()  # Асинхронне відключення для надійності
+            logger.info("Webhook disabled successfully (async)")
         except Exception as e:
-            logger.error(f"Failed to disable webhook: {e}")
+            logger.error(f"Failed to disable webhook (async): {e}")
+        await bot.initialize()
+        await app_telegram.initialize()
+        logger.info("Starting polling...")
+        await app_telegram.run_polling()
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(disable_webhook())
-    loop.run_until_complete(bot.initialize())
-    loop.run_until_complete(app_telegram.initialize())
-    app_telegram.run_polling()
+    loop.run_until_complete(init_bot())

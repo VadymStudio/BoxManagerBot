@@ -31,11 +31,8 @@ logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Налаштування HTTPX із більшим пулом з’єднань
-app_telegram = Application.builder().token(TELEGRAM_TOKEN).http_client_kwargs({
-    "limits": {"max_connections": 100, "max_keepalive_connections": 20},
-    "timeout": 30.0
-}).build()
+# Ініціалізація Application без http_client_kwargs
+app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # Ініціалізація бази даних SQLite
 def init_db():

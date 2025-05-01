@@ -111,13 +111,14 @@ app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
-# Ініціалізація Application
-async def initialize_app_telegram():
+# Ініціалізація Bot і Application
+async def initialize_app():
+    await bot.initialize()
     await app_telegram.initialize()
 
 # Викликаємо ініціалізацію при запуску
 loop = asyncio.get_event_loop()
-loop.run_until_complete(initialize_app_telegram())
+loop.run_until_complete(initialize_app())
 
 # Вебхук
 @app.route("/webhook", methods=["POST"])

@@ -473,9 +473,13 @@ app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 def webhook():
     try:
         data = request.get_json()
+        logger.info(f"Webhook received data: {data}")
         update = Update.de_json(data, bot)
         if update:
             app_telegram.process_update(update)
+            logger.info("Webhook processed update successfully")
+        else:
+            logger.warning("Webhook received no valid update")
         return jsonify({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
@@ -489,7 +493,15 @@ def health():
 # Ініціалізація та запуск polling
 if __name__ == "__main__":
     import asyncio
+    async def disable_webhook():
+        try:
+            await bot.delete_webhook()
+            logger.info("Webhook disabled successfully")
+        except Exception as e:
+            logger.error(f"Failed to disable webhook: {e}")
+
     loop = asyncio.get_event_loop()
+    loop.run_until_complete(disable_webhook())
     loop.run_until_complete(bot.initialize())
     loop.run_until_complete(app_telegram.initialize())
     app_telegram.run_polling()

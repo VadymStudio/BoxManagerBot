@@ -4,13 +4,19 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import sqlite3
 import os
 import ast
+import asyncio
 
+# Налаштування змінних середовища
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = ast.literal_eval(os.environ.get("ADMIN_IDS", "[]"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
 
+# Ініціалізація Flask і Telegram Bot
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
+
+# Ініціалізація Application
+app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -26,14 +32,27 @@ def init_db():
 
 init_db()
 
+# Перевірка maintenance mode
+maintenance_mode = False
+
+async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if maintenance_mode and update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Бот на технічних роботах. Спробуй пізніше.")
+        return False
+    return True
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_maintenance(update, context):
+        return
     await update.message.reply_text(
         "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт."
     )
 
 # Створення акаунта
 async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_maintenance(update, context):
+        return
     user_id = update.effective_user.id
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -67,9 +86,7 @@ async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/maintenance_off - Вимкнути технічні роботи"
     )
 
-# Технічні роботи
-maintenance_mode = False
-
+# Увімкнення технічних робіт
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global maintenance_mode
     if update.effective_user.id not in ADMIN_IDS:
@@ -78,6 +95,7 @@ async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     maintenance_mode = True
     await update.message.reply_text("Технічні роботи увімкнено. Бот призупинено.")
 
+# Вимкнення технічних робіт
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global maintenance_mode
     if update.effective_user.id not in ADMIN_IDS:
@@ -86,33 +104,31 @@ async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     maintenance_mode = False
     await update.message.reply_text("Технічні роботи вимкнено. Бот активний.")
 
-# Перевірка maintenance mode
-async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if maintenance_mode and update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("Бот на технічних роботах. Спробуй пізніше.")
-        return False
-    return True
+# Додаємо обробники команд
+app_telegram.add_handler(CommandHandler("start", start))
+app_telegram.add_handler(CommandHandler("create_account", create_account))
+app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
+app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
+app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
 # Вебхук
 @app.route("/webhook", methods=["POST"])
 async def webhook():
     update = Update.de_json(request.get_json(), bot)
-    app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Додаємо обробники команд
-    app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(CommandHandler("create_account", create_account))
-    app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
-    app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
-    app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
-    
-    await app_telegram.process_update(update)
+    if update:
+        await app_telegram.process_update(update)
     return {"ok": True}
 
 # Health check для UptimeRobot
 @app.route("/health")
 def health():
     return {"status": "ok"}
+
+# Ініціалізація Application перед запуском
+@app.before_first_request
+def initialize_application():
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app_telegram.initialize())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

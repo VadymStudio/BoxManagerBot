@@ -1,21 +1,31 @@
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update, Bot, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import sqlite3
 import os
 import asyncio
+import logging
+
+# Налаштування логування
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # Локальні налаштування (для локального запуску)
 try:
     from config import TELEGRAM_TOKEN, Vadym_ID, Nazar_ID, DATABASE_URL
 except ImportError:
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    Vadym_ID = int(os.environ.get("Vadym_ID", 0))
-    Nazar_ID = int(os.environ.get("Nazar_ID", 0))
+    try:
+        Vadym_ID = int(os.environ.get("Vadym_ID", 0))
+        Nazar_ID = int(os.environ.get("Nazar_ID", 0))
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error reading Vadym_ID or Nazar_ID: {e}")
+        Vadym_ID, Nazar_ID = 0, 0
     DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
 
 # Список адмінів
-ADMIN_IDS = [Vadym_ID, Nazar_ID]
+ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
+logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 
 # Ініціалізація Flask і Telegram Bot
 app = Flask(__name__)
@@ -118,7 +128,9 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} tried /admin_setting. ADMIN_IDS: {ADMIN_IDS}")
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     await update.message.reply_text(
@@ -129,21 +141,35 @@ async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Увімкнення технічних робіт
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global maintenance_mode
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
+    global maintenance_mode
     maintenance_mode = True
     await update.message.reply_text("Технічні роботи увімкнено. Бот призупинено.")
 
 # Вимкнення технічних робіт
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global maintenance_mode
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
+    global maintenance_mode
     maintenance_mode = False
     await update.message.reply_text("Технічні роботи вимкнено. Бот активний.")
+
+# Налаштування кастомного меню для адмінів
+async def set_admin_commands():
+    admin_commands = [
+        BotCommand("admin_setting", "Адмін-панель"),
+        BotCommand("maintenance_on", "Увімкнути тех. роботи"),
+        BotCommand("maintenance_off", "Вимкнути тех. роботи"),
+    ]
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(commands=admin_commands, scope={"type": "chat", "chat_id": admin_id})
+            logger.info(f"Set admin commands for user {admin_id}")
+        except Exception as e:
+            logger.error(f"Failed to set commands for {admin_id}: {e}")
 
 # Додаємо обробники команд
 app_telegram.add_handler(CommandHandler("start", start))
@@ -158,6 +184,7 @@ app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 async def initialize_app():
     await bot.initialize()
     await app_telegram.initialize()
+    await set_admin_commands()
 
 # Викликаємо ініціалізацію при запуску
 loop = asyncio.get_event_loop()
@@ -172,7 +199,7 @@ async def webhook():
             await app_telegram.process_update(update)
         return {"ok": True}
     except Exception as e:
-        print(f"Webhook error: {e}")
+        logger.error(f"Webhook error: {e}")
         return {"ok": False}, 500
 
 # Health check для UptimeRobot

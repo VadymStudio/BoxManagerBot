@@ -9,23 +9,28 @@ from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboa
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.request import HTTPXRequest
 import httpx
+from dotenv import load_dotenv
+
+# Завантаження змінних із .env
+load_dotenv()
 
 # Налаштування логування
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Локальні налаштування
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 try:
-    from config import TELEGRAM_TOKEN, Vadym_ID, Nazar_ID, DATABASE_URL
-except ImportError:
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    try:
-        Vadym_ID = int(os.environ.get("Vadym_ID", 0))
-        Nazar_ID = int(os.environ.get("Nazar_ID", 0))
-    except (ValueError, TypeError) as e:
-        logger.error(f"Error reading Vadym_ID or Nazar_ID: {e}")
-        Vadym_ID, Nazar_ID = 0, 0
-    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///bot.db")
+    Vadym_ID = int(os.getenv("Vadym_ID", 0))
+    Nazar_ID = int(os.getenv("Nazar_ID", 0))
+except (ValueError, TypeError) as e:
+    logger.error(f"Error reading Vadym_ID or Nazar_ID: {e}")
+    Vadym_ID, Nazar_ID = 0, 0
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot.db")
+
+if not TELEGRAM_TOKEN:
+    logger.error("TELEGRAM_TOKEN is not set")
+    raise ValueError("TELEGRAM_TOKEN is required")
 
 # Список адмінів
 ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
@@ -110,7 +115,7 @@ async def set_admin_commands(user_id):
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /start from user {update.effective_user.id}")
+    logger.debug(f"Received /start from user {update.effective_user.id}")
     user_id = update.effective_user.id
     if user_id in ADMIN_IDS and not context.user_data.get(f"admin_commands_set_{user_id}"):
         await set_admin_commands(user_id)
@@ -123,7 +128,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда /create_account
 async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /create_account from user {update.effective_user.id}")
+    logger.debug(f"Received /create_account from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -140,7 +145,7 @@ async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обробка текстового вводу для імені персонажа
 async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received text input from user {update.effective_user.id}: {update.message.text}")
+    logger.debug(f"Received text input from user {update.effective_user.id}: {update.message.text}")
     if not context.user_data.get("awaiting_character_name"):
         return
     if not await check_maintenance(update, context):
@@ -185,7 +190,7 @@ async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    logger.info(f"Received fighter type selection from user {query.from_user.id}: {query.data}")
+    logger.debug(f"Received fighter type selection from user {query.from_user.id}: {query.data}")
     if not context.user_data.get("awaiting_fighter_type"):
         await query.message.reply_text("Помилка: вибір бійця вже завершено.")
         return
@@ -251,7 +256,7 @@ async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # Команда /delete_account
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /delete_account from user {update.effective_user.id}")
+    logger.debug(f"Received /delete_account from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -271,7 +276,7 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда /start_match
 async def start_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /start_match from user {update.effective_user.id}")
+    logger.debug(f"Received /start_match from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -344,7 +349,7 @@ def get_fight_keyboard(match_id):
 async def handle_fight_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    logger.info(f"Received fight action from user {query.from_user.id}: {query.data}")
+    logger.debug(f"Received fight action from user {query.from_user.id}: {query.data}")
     user_id = query.from_user.id
     callback_data = query.data.split("_")
     match_id, action = int(callback_data[1]), callback_data[2]
@@ -414,7 +419,7 @@ async def process_round(match_id, context, timed_out=False):
     p2_stats = c.fetchone()
     p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat = p2_stats
     
-    result_text = f"Раунд {round_num}\n"
+    result_text = f"Раунд {round_num}\ Wn"
     
     # Якщо тайм-аут, дії = "rest"
     if timed_out:
@@ -531,7 +536,7 @@ async def end_match(match_id, context, player1_id, player2_id, p1_health, p2_hea
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    logger.info(f"Received /admin_setting from user {user_id}. ADMIN_IDS: {ADMIN_IDS}")
+    logger.debug(f"Received /admin_setting from user {user_id}. ADMIN_IDS: {ADMIN_IDS}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -544,7 +549,7 @@ async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Увімкнення технічних робіт
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    logger.info(f"Received /maintenance_on from user {user_id}")
+    logger.debug(f"Received /maintenance_on from user {user_id}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -555,7 +560,7 @@ async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Вимкнення технічних робіт
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    logger.info(f"Received /maintenance_off from user {user_id}")
+    logger.debug(f"Received /maintenance_off from user {user_id}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -580,11 +585,11 @@ app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 def webhook():
     try:
         data = request.get_json()
-        logger.info(f"Webhook received data: {data}")
+        logger.debug(f"Webhook received data: {data}")
         update = Update.de_json(data, bot)
         if update:
             app_telegram.process_update(update)
-            logger.info("Webhook processed update successfully")
+            logger.debug("Webhook processed update successfully")
         else:
             logger.warning("Webhook received no valid update")
         return jsonify({"ok": True})
@@ -611,10 +616,12 @@ def disable_webhook_sync():
 
 # Ініціалізація та запуск polling
 if __name__ == "__main__":
+    logger.info("Starting bot...")
     disable_webhook_sync()  # Відключаємо вебхук
     try:
-        logger.info("Starting bot initialization...")
-        app_telegram.run_polling(poll_interval=1.0, timeout=10)
+        logger.info("Initializing bot and starting polling...")
+        app_telegram.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
         logger.info("Polling started successfully")
     except Exception as e:
         logger.error(f"Polling failed: {e}")
+        raise

@@ -1,5 +1,6 @@
 python-telegram-bot==20.7
-gunicorn==21.2.0
-gevent==24.2.1
-flask==2.3.3
-httpx==0.25.2
+     gunicorn==21.2.0
+     gevent==24.2.1
+     flask==2.3.3
+     httpx==0.25.2
+     python-dotenv==1.0.1

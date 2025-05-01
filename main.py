@@ -1,10 +1,9 @@
-import asyncio
 import logging
 import os
 import random
 import sqlite3
 import time
-from aiohttp import web
+from flask import Flask, request, jsonify
 from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.request import HTTPXRequest
@@ -38,6 +37,9 @@ request = HTTPXRequest(
     limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     timeout=30.0
 )
+
+# Ініціалізація Flask
+app = Flask(__name__)
 
 # Ініціалізація Telegram Bot і Application
 bot = Bot(token=TELEGRAM_TOKEN, request=request)
@@ -191,16 +193,31 @@ async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Характеристики бійців
     fighter_stats = {
         "swarmer": {
-            "stamina": 1.1, "total_stamina": 100, "strength": 1.5, "reaction": 1.1,
-            "health": 120, "punch_speed": 1.35, "will": 1.5
+            "stamina": 1.1,
+            "total_stamina": 100,
+            "strength": 1.5,
+            "reaction": 1.1,
+            "health": 120,
+            "punch_speed": 1.35,
+            "will": 1.5
         },
         "out_boxer": {
-            "stamina": 1.5, "total_stamina": 100, "strength": 1.15, "reaction": 1.1,
-            "health": 200, "punch_speed": 1.1, "will": 1.3
+            "stamina": 1.5,
+            "total_stamina": 100,
+            "strength": 1.15,
+            "reaction": 1.1,
+            "health": 200,
+            "punch_speed": 1.1,
+            "will": 1.3
         },
         "counter_puncher": {
-            "stamina": 1.15, "total_stamina": 100, "strength": 1.25, "reaction": 1.5,
-            "health": 100, "punch_speed": 1.5, "will": 1.2
+            "stamina": 1.15,
+            "total_stamina": 100,
+            "strength": 1.25,
+            "reaction": 1.5,
+            "health": 100,
+            "punch_speed": 1.5,
+            "will": 1.2
         }
     }
     
@@ -454,35 +471,28 @@ app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
-# Ініціалізація Bot і Application
-async def initialize_app():
-    await bot.initialize()
-    await app_telegram.initialize()
-
-# Асинхронний вебхук із aiohttp
-async def webhook(request):
+# Вебхук для Flask
+@app.route("/webhook", methods=["POST"])
+def webhook():
     try:
-        data = await request.json()
+        data = request.get_json()
         update = Update.de_json(data, bot)
         if update:
-            await app_telegram.process_update(update)
-        return web.json_response({"ok": True})
+            app_telegram.process_update(update)
+        return jsonify({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return web.json_response({"ok": False}, status=500)
+        return jsonify({"ok": False}), 500
 
 # Health check для UptimeRobot
-async def health(request):
-    return web.json_response({"status": "ok"})
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
 
-# Налаштування aiohttp серверу
-app = web.Application()
-app.router.add_post("/webhook", webhook)
-app.router.add_get("/health", health)
-
-# Запуск сервера
+# Ініціалізація та запуск polling
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(initialize_app())
-    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(bot.initialize())
+    loop.run_until_complete(app_telegram.initialize())
+    app_telegram.run_polling()

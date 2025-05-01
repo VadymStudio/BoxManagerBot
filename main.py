@@ -1,0 +1,115 @@
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
+import sqlite3
+import os
+
+app = Flask(__name__)
+bot_token = os.getenv("TELEGRAM_TOKEN")
+admin_id = int(os.getenv("ADMIN_ID"))
+bot = Bot(token=bot_token)
+
+# Ініціалізація бази даних SQLite
+def init_db():
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        character_name TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт."
+    )
+
+# Створення акаунта
+async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    if c.fetchone():
+        await update.message.reply_text("Ти вже маєш акаунт!")
+        conn.close()
+        return
+    args = context.args
+    if len(args) < 1:
+        await update.message.reply_text("Вкажи ім'я персонажа: /create_account <ім'я>")
+        conn.close()
+        return
+    character_name = " ".join(args)
+    c.execute(
+        "INSERT INTO users (user_id, username, character_name) VALUES (?, ?, ?)",
+        (user_id, update.effective_user.username, character_name),
+    )
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"Акаунт створено! Персонаж: {character_name}")
+
+# Адмінська команда /admin_setting
+async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != admin_id:
+        await update.message.reply_text("Доступ заборонено!")
+        return
+    await update.message.reply_text(
+        "Адмін-панель:\n"
+        "/maintenance_on - Увімкнути технічні роботи\n"
+        "/maintenance_off - Вимкнути технічні роботи"
+    )
+
+# Технічні роботи
+maintenance_mode = False
+
+async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global maintenance_mode
+    if update.effective_user.id != admin_id:
+        await update.message.reply_text("Доступ заборонено!")
+        return
+    maintenance_mode = True
+    await update.message.reply_text("Технічні роботи увімкнено. Бот призупинено.")
+
+async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global maintenance_mode
+    if update.effective_user.id != admin_id:
+        await update.message.reply_text("Доступ заборонено!")
+        return
+    maintenance_mode = False
+    await update.message.reply_text("Технічні роботи вимкнено. Бот активний.")
+
+# Перевірка maintenance mode для всіх команд
+async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if maintenance_mode and update.effective_user.id != admin_id:
+        await update.message.reply_text("Бот на технічних роботах. Спробуй пізніше.")
+        return False
+    return True
+
+# Вебхук
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(), bot)
+    app_telegram = Application.builder().token(bot_token).build()
+    
+    # Додаємо обробники команд
+    app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(CommandHandler("create_account", create_account))
+    app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
+    app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
+    app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
+    
+    await app_telegram.process_update(update)
+    return {"ok": True}
+
+# Health check для UptimeRobot
+@app.route("/health")
+def health():
+    return {"status": "ok"}
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)

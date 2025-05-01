@@ -2,12 +2,10 @@ from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 import sqlite3
-import os
+from config import TELEGRAM_TOKEN, ADMIN_IDS, DATABASE_URL
 
 app = Flask(__name__)
-bot_token = os.getenv("TELEGRAM_TOKEN")
-admin_id = int(os.getenv("ADMIN_ID"))
-bot = Bot(token=bot_token)
+bot = Bot(token=TELEGRAM_TOKEN)
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -55,7 +53,7 @@ async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != admin_id:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     await update.message.reply_text(
@@ -69,7 +67,7 @@ maintenance_mode = False
 
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global maintenance_mode
-    if update.effective_user.id != admin_id:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     maintenance_mode = True
@@ -77,15 +75,15 @@ async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global maintenance_mode
-    if update.effective_user.id != admin_id:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     maintenance_mode = False
     await update.message.reply_text("Технічні роботи вимкнено. Бот активний.")
 
-# Перевірка maintenance mode для всіх команд
+# Перевірка maintenance mode
 async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if maintenance_mode and update.effective_user.id != admin_id:
+    if maintenance_mode and update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Бот на технічних роботах. Спробуй пізніше.")
         return False
     return True
@@ -94,7 +92,7 @@ async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.route("/webhook", methods=["POST"])
 async def webhook():
     update = Update.de_json(request.get_json(), bot)
-    app_telegram = Application.builder().token(bot_token).build()
+    app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Додаємо обробники команд
     app_telegram.add_handler(CommandHandler("start", start))

@@ -1,4 +1,5 @@
 *.pyc
 __pycache__/
 bot.db
+config.py
 .env

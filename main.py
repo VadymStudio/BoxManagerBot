@@ -3,6 +3,7 @@ import os
 import random
 import sqlite3
 import time
+import asyncio
 from flask import Flask, request, jsonify
 from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -76,6 +77,7 @@ def init_db():
         player1_stamina REAL,
         player2_health REAL,
         player2_stamina REAL,
+        action_deadline REAL,
         FOREIGN KEY (player1_id) REFERENCES users (user_id),
         FOREIGN KEY (player2_id) REFERENCES users (user_id)
     )""")
@@ -306,11 +308,12 @@ async def start_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
     opponent_stats = c.fetchone()
     
-    # Створюємо матч
+    # Створюємо матч із дедлайном для дії
+    action_deadline = time.time() + 15  # 15 секунд на дію
     c.execute(
-        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina)
-        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?)""",
-        (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1])
+        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
+        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+        (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
     )
     conn.commit()
     match_id = c.lastrowid
@@ -348,14 +351,21 @@ async def handle_fight_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("SELECT player1_id, player2_id, player1_action, player2_action, status FROM matches WHERE match_id = ?", (match_id,))
+    c.execute("SELECT player1_id, player2_id, player1_action, player2_action, status, action_deadline FROM matches WHERE match_id = ?", (match_id,))
     match = c.fetchone()
     if not match or match[4] != "active":
         await query.message.reply_text("Матч завершено або не існує.")
         conn.close()
         return
     
-    player1_id, player2_id, player1_action, player2_action = match
+    player1_id, player2_id, player1_action, player2_action, status, action_deadline = match
+    
+    # Перевіряємо дедлайн
+    if time.time() > action_deadline:
+        await query.message.reply_text("Час для дії минув! Раунд завершено автоматично.")
+        await process_round(match_id, context, timed_out=True)
+        conn.close()
+        return
     
     # Зберігаємо дію гравця
     if user_id == player1_id:
@@ -378,43 +388,109 @@ async def handle_fight_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     conn.close()
 
-# Обробка раунду (спрощена, без повних формул)
-async def process_round(match_id, context):
+# Обробка раунду з формулами
+async def process_round(match_id, context, timed_out=False):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute(
         """SELECT player1_id, player2_id, player1_action, player2_action, player1_health, player1_stamina,
-        player2_health, player2_stamina, current_round FROM matches WHERE match_id = ?""",
+        player2_health, player2_stamina, current_round, start_time FROM matches WHERE match_id = ?""",
         (match_id,)
     )
     match = c.fetchone()
-    player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num = match
+    player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num, start_time = match
     
-    # Спрощена логіка (для тесту)
+    # Перевіряємо тривалість бою (3 хвилини = 180 секунд)
+    if time.time() > start_time + 180:
+        await end_match(match_id, context, player1_id, player2_id, p1_health, p2_health)
+        conn.close()
+        return
+    
+    # Отримуємо характеристики гравців
+    c.execute("SELECT strength, reaction, punch_speed, stamina FROM fighter_stats WHERE user_id = ?", (player1_id,))
+    p1_stats = c.fetchone()
+    p1_strength, p1_reaction, p1_punch_speed, p1_stamina_stat = p1_stats
+    c.execute("SELECT strength, reaction, punch_speed, stamina FROM fighter_stats WHERE user_id = ?", (player2_id,))
+    p2_stats = c.fetchone()
+    p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat = p2_stats
+    
     result_text = f"Раунд {round_num}\n"
-    result_text += f"Гравець 1: {p1_action}\n"
-    result_text += f"Гравець 2: {p2_action}\n"
     
-    # Оновлюємо стан (приклад: атака зменшує здоров’я)
-    if p1_action == "attack" and p2_action != "dodge":
-        p2_health -= 10  # Тестове зменшення
-        result_text += "Гравець 1 вдарив Гравця 2!\n"
-    if p2_action == "attack" and p1_action != "dodge":
-        p1_health -= 10
-        result_text += "Гравець 2 вдарив Гравця 1!\n"
+    # Якщо тайм-аут, дії = "rest"
+    if timed_out:
+        p1_action = "rest"
+        p2_action = "rest"
+        result_text += "Час минув! Обидва гравці відпочивають.\n"
+    
+    # Формули
+    base_damage = 10  # Базовий урон удару
+    if p1_action == "attack" and p2_action != "dodge" and p2_action != "block":
+        damage = base_damage * p1_strength  # Урон = урон прийому * Сила
+        p2_health -= damage
+        p1_stamina -= 10 * p1_stamina_stat
+        result_text += f"Гравець 1 вдарив Гравця 2! Урон: {damage:.1f}\n"
+    elif p1_action == "attack" and p2_action == "block":
+        block_strength = 0.5 * p2_stamina_stat * p2_strength  # Блок = 0.5 * Виносливість * Сила
+        damage = max(0, base_damage * p1_strength - block_strength)
+        p2_health -= damage
+        p1_stamina -= 10 * p1_stamina_stat
+        result_text += f"Гравець 1 вдарив, але Гравець 2 блокував! Урон: {damage:.1f}\n"
+    elif p1_action == "attack" and p2_action == "dodge":
+        dodge_chance = 0.4 * p2_reaction * p2_punch_speed  # Ухилення = 0.4 * Реакція * Швидкість удару
+        if random.random() < dodge_chance:
+            result_text += "Гравець 1 вдарив, але Гравець 2 ухилився!\n"
+        else:
+            damage = base_damage * p1_strength
+            p2_health -= damage
+            p1_stamina -= 10 * p1_stamina_stat
+            result_text += f"Гравець 1 вдарив Гравця 2! Ухилення не вдалося. Урон: {damage:.1f}\n"
+    elif p1_action == "rest":
+        p1_stamina = min(p1_stamina + 15 * p1_stamina_stat, 100)
+        result_text += "Гравець 1 відпочиває.\n"
+    
+    if p2_action == "attack" and p1_action != "dodge" and p1_action != "block":
+        damage = base_damage * p2_strength
+        p1_health -= damage
+        p2_stamina -= 10 * p2_stamina_stat
+        result_text += f"Гравець 2 вдарив Гравця 1! Урон: {damage:.1f}\n"
+    elif p2_action == "attack" and p1_action == "block":
+        block_strength = 0.5 * p1_stamina_stat * p1_strength
+        damage = max(0, base_damage * p2_strength - block_strength)
+        p1_health -= damage
+        p2_stamina -= 10 * p2_stamina_stat
+        result_text += f"Гравець 2 вдарив, але Гравець 1 блокував! Урон: {damage:.1f}\n"
+    elif p2_action == "attack" and p1_action == "dodge":
+        dodge_chance = 0.4 * p1_reaction * p1_punch_speed
+        if random.random() < dodge_chance:
+            result_text += "Гравець 2 вдарив, але Гравець 1 ухилився!\n"
+        else:
+            damage = base_damage * p2_strength
+            p1_health -= damage
+            p2_stamina -= 10 * p2_stamina_stat
+            result_text += f"Гравець 2 вдарив Гравця 1! Ухилення не вдалося. Урон: {damage:.1f}\n"
+    elif p2_action == "rest":
+        p2_stamina = min(p2_stamina + 15 * p2_stamina_stat, 100)
+        result_text += "Гравець 2 відпочиває.\n"
+    
+    # Перевіряємо здоров’я
+    if p1_health <= 0 or p2_health <= 0:
+        await end_match(match_id, context, player1_id, player2_id, p1_health, p2_health)
+        conn.close()
+        return
     
     # Оновлюємо матч
+    new_deadline = time.time() + 15  # Новий дедлайн
     c.execute(
         """UPDATE matches SET player1_health = ?, player1_stamina = ?, player2_health = ?, player2_stamina = ?,
-        player1_action = NULL, player2_action = NULL, current_round = ? WHERE match_id = ?""",
-        (p1_health, p1_stamina, p2_health, p2_stamina, round_num + 1, match_id)
+        player1_action = NULL, player2_action = NULL, current_round = ?, action_deadline = ? WHERE match_id = ?""",
+        (p1_health, p1_stamina, p2_health, p2_stamina, round_num + 1, new_deadline, match_id)
     )
     conn.commit()
     
     # Відправляємо результати
     status_text = (
-        f"Стан:\nГравець 1: HP {p1_health}, Виносливість {p1_stamina}\n"
-        f"Гравець 2: HP {p2_health}, Виносливість {p2_stamina}\n"
+        f"Стан:\nГравець 1: HP {p1_health:.1f}, Виносливість {p1_stamina:.1f}\n"
+        f"Гравець 2: HP {p2_health:.1f}, Виносливість {p2_stamina:.1f}\n"
         "Обери наступну дію (15 секунд):"
     )
     await bot.send_message(
@@ -429,6 +505,28 @@ async def process_round(match_id, context):
     )
     
     conn.close()
+
+# Завершення матчу
+async def end_match(match_id, context, player1_id, player2_id, p1_health, p2_health):
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("UPDATE matches SET status = 'finished' WHERE match_id = ?", (match_id,))
+    conn.commit()
+    conn.close()
+    
+    if p1_health <= 0 and p2_health <= 0:
+        result = "Нічия! Обидва бійці втратили все здоров’я."
+    elif p1_health <= 0:
+        result = "Гравець 2 переміг!"
+    elif p2_health <= 0:
+        result = "Гравець 1 переміг!"
+    else:
+        result = "Матч завершено за часом. Переможець визначається за здоров’ям:\n"
+        result += f"Гравець 1: HP {p1_health:.1f}\nГравець 2: HP {p2_health:.1f}\n"
+        result += "Гравець 1 переміг!" if p1_health > p2_health else "Гравець 2 переміг!" if p2_health > p1_health else "Нічия!"
+    
+    await bot.send_message(chat_id=player1_id, text=result)
+    await bot.send_message(chat_id=player2_id, text=result)
 
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -477,7 +575,7 @@ app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
-# Вебхук для Flask (залишаємо для дебагу, але не використовуємо)
+# Вебхук для Flask (для дебагу або майбутнього використання)
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -513,7 +611,6 @@ def disable_webhook_sync():
 
 # Ініціалізація та запуск polling
 if __name__ == "__main__":
-    import asyncio
     disable_webhook_sync()  # Відключаємо вебхук
     try:
         logger.info("Starting bot initialization...")

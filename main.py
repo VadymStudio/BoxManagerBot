@@ -33,8 +33,6 @@ logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 # Налаштування HTTPX із більшим пулом з’єднань
 request = HTTPXRequest(
     connection_pool_size=100,
-    http_version="1.1",
-    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     timeout=30.0
 )
 

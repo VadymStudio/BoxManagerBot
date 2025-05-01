@@ -5,6 +5,7 @@ import sqlite3
 import os
 import ast
 import asyncio
+from asgiref.sync import async_to_sync
 
 # Налаштування змінних середовища
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -120,13 +121,18 @@ async def initialize_app():
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук
+# Вебхук (синхронний)
 @app.route("/webhook", methods=["POST"])
+@async_to_sync
 async def webhook():
-    update = Update.de_json(request.get_json(), bot)
-    if update:
-        await app_telegram.process_update(update)
-    return {"ok": True}
+    try:
+        update = Update.de_json(request.get_json(), bot)
+        if update:
+            await app_telegram.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"ok": False}, 500
 
 # Health check для UptimeRobot
 @app.route("/health")

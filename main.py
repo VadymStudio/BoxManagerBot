@@ -1,11 +1,10 @@
 from flask import Flask, request
-from telegram import Update, Bot, BotCommand
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import sqlite3
 import os
 import asyncio
 import logging
-from asgiref.sync import async_to_sync
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -45,7 +44,19 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
-        character_name TEXT UNIQUE
+        character_name TEXT UNIQUE,
+        fighter_type TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS fighter_stats (
+        user_id INTEGER PRIMARY KEY,
+        fighter_type TEXT,
+        stamina REAL,
+        strength REAL,
+        reaction REAL,
+        health REAL,
+        punch_speed REAL,
+        will REAL,
+        FOREIGN KEY (user_id) REFERENCES users (user_id)
     )""")
     conn.commit()
     conn.close()
@@ -123,12 +134,75 @@ async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TY
             (user_id, update.effective_user.username, character_name),
         )
         conn.commit()
-        await update.message.reply_text(f"Акаунт створено! Персонаж: {character_name}")
+        context.user_data["awaiting_character_name"] = False
+        context.user_data["awaiting_fighter_type"] = True
+        context.user_data["character_name"] = character_name
+        keyboard = [
+            [InlineKeyboardButton("Swarmer", callback_data="swarmer")],
+            [InlineKeyboardButton("Out-boxer", callback_data="out_boxer")],
+            [InlineKeyboardButton("Counter-puncher", callback_data="counter_puncher")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Ким буде твій персонаж? Вибери тип бійця (змінити вибір потім неможливо):",
+            reply_markup=reply_markup
+        )
     except sqlite3.IntegrityError:
         await update.message.reply_text("Цей нік уже зайнятий. Вибери інший.")
     finally:
         conn.close()
-        context.user_data["awaiting_character_name"] = False
+
+# Обробка вибору типу бійця
+async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not context.user_data.get("awaiting_fighter_type"):
+        await query.message.reply_text("Помилка: вибір бійця вже завершено.")
+        return
+    user_id = query.from_user.id
+    fighter_type = query.data
+    character_name = context.user_data.get("character_name")
+    
+    # Характеристики бійців
+    fighter_stats = {
+        "swarmer": {
+            "stamina": 1.1, "total_stamina": 100, "strength": 1.5, "reaction": 1.1,
+            "health": 120, "punch_speed": 1.35, "will": 1.5
+        },
+        "out_boxer": {
+            "stamina": 1.5, "total_stamina": 100, "strength": 1.15, "reaction": 1.1,
+            "health": 200, "punch_speed": 1.1, "will": 1.3
+        },
+        "counter_puncher": {
+            "stamina": 1.15, "total_stamina": 100, "strength": 1.25, "reaction": 1.5,
+            "health": 100, "punch_speed": 1.5, "will": 1.2
+        }
+    }
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    try:
+        # Оновлюємо тип бійця в таблиці users
+        c.execute(
+            "UPDATE users SET fighter_type = ? WHERE user_id = ?",
+            (fighter_type, user_id)
+        )
+        # Додаємо характеристики в таблицю fighter_stats
+        stats = fighter_stats[fighter_type]
+        c.execute(
+            """INSERT INTO fighter_stats (user_id, fighter_type, stamina, strength, reaction, health, punch_speed, will)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, fighter_type, stats["stamina"], stats["strength"], stats["reaction"],
+             stats["health"], stats["punch_speed"], stats["will"])
+        )
+        conn.commit()
+        await query.message.reply_text(f"Акаунт створено! Персонаж: {character_name}, Тип: {fighter_type.capitalize()}")
+    except sqlite3.IntegrityError:
+        await query.message.reply_text("Помилка при збереженні бійця. Спробуй ще раз.")
+    finally:
+        conn.close()
+        context.user_data["awaiting_fighter_type"] = False
+        context.user_data["character_name"] = None
 
 # Команда /delete_account
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,6 +217,7 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
     c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    c.execute("DELETE FROM fighter_stats WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
     await update.message.reply_text("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
@@ -184,6 +259,7 @@ async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app_telegram.add_handler(CommandHandler("start", start))
 app_telegram.add_handler(CommandHandler("create_account", create_account))
 app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_character_name))
+app_telegram.add_handler(CallbackQueryHandler(handle_fighter_type))
 app_telegram.add_handler(CommandHandler("delete_account", delete_account))
 app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
@@ -198,9 +274,8 @@ async def initialize_app():
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук (синхронний)
+# Вебхук (асинхронний)
 @app.route("/webhook", methods=["POST"])
-@async_to_sync
 async def webhook():
     try:
         update = Update.de_json(request.get_json(), bot)

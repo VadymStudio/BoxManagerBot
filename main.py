@@ -5,6 +5,9 @@ import sqlite3
 import os
 import asyncio
 import logging
+from asgiref.sync import async_to_sync
+import random
+import time
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,7 +34,7 @@ logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Ініціалізація Application без http_client_kwargs
+# Ініціалізація Application
 app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # Ініціалізація бази даних SQLite
@@ -54,6 +57,22 @@ def init_db():
         punch_speed REAL,
         will REAL,
         FOREIGN KEY (user_id) REFERENCES users (user_id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS matches (
+        match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player1_id INTEGER,
+        player2_id INTEGER,
+        status TEXT,
+        start_time REAL,
+        current_round INTEGER,
+        player1_action TEXT,
+        player2_action TEXT,
+        player1_health REAL,
+        player1_stamina REAL,
+        player2_health REAL,
+        player2_stamina REAL,
+        FOREIGN KEY (player1_id) REFERENCES users (user_id),
+        FOREIGN KEY (player2_id) REFERENCES users (user_id)
     )""")
     conn.commit()
     conn.close()
@@ -91,7 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_maintenance(update, context):
         return
     await update.message.reply_text(
-        "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт."
+        "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт, або /start_match, щоб почати бій."
     )
 
 # Команда /create_account
@@ -134,16 +153,19 @@ async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data["awaiting_character_name"] = False
         context.user_data["awaiting_fighter_type"] = True
         context.user_data["character_name"] = character_name
+        fighter_descriptions = (
+            "Вибери тип бійця (змінити вибір потім неможливо):\n\n"
+            "🔥 *Swarmer*: Агресивний боєць. Висока сила (1.5), воля (1.5), швидкість удару (1.35). Здоров’я: 120, виносливість: 1.1.\n"
+            "🥊 *Out-boxer*: Витривалий і тактичний. Висока виносливість (1.5), здоров’я (200). Сила: 1.15, воля: 1.3.\n"
+            "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5). Сила: 1.25, здоров’я: 100, воля: 1.2."
+        )
         keyboard = [
             [InlineKeyboardButton("Swarmer", callback_data="swarmer")],
             [InlineKeyboardButton("Out-boxer", callback_data="out_boxer")],
             [InlineKeyboardButton("Counter-puncher", callback_data="counter_puncher")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Ким буде твій персонаж? Вибери тип бійця (змінити вибір потім неможливо):",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(fighter_descriptions, reply_markup=reply_markup, parse_mode="Markdown")
     except sqlite3.IntegrityError:
         await update.message.reply_text("Цей нік уже зайнятий. Вибери інший.")
     finally:
@@ -215,9 +237,171 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
     c.execute("DELETE FROM fighter_stats WHERE user_id = ?", (user_id,))
+    c.execute("DELETE FROM matches WHERE player1_id = ? OR player2_id = ?", (user_id, user_id))
     conn.commit()
     conn.close()
     await update.message.reply_text("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
+
+# Команда /start_match
+async def start_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_maintenance(update, context):
+        return
+    user_id = update.effective_user.id
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        await update.message.reply_text("Спочатку створи акаунт за допомогою /create_account!")
+        conn.close()
+        return
+    
+    # Перевіряємо, чи гравець уже в матчі
+    c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
+    if c.fetchone():
+        await update.message.reply_text("Ти вже в матчі! Закінчи поточний бій.")
+        conn.close()
+        return
+    
+    # Шукаємо іншого гравця
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id != ? AND user_id NOT IN (SELECT player1_id FROM matches WHERE status = 'active') AND user_id NOT IN (SELECT player2_id FROM matches WHERE status = 'active')", (user_id,))
+    opponents = c.fetchall()
+    if not opponents:
+        await update.message.reply_text("Немає доступних суперників. Спробуй пізніше.")
+        conn.close()
+        return
+    
+    opponent = random.choice(opponents)
+    opponent_id, opponent_name, opponent_type = opponent
+    
+    # Отримуємо характеристики гравців
+    c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
+    player_stats = c.fetchone()
+    c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
+    opponent_stats = c.fetchone()
+    
+    # Створюємо матч
+    c.execute(
+        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina)
+        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?)""",
+        (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1])
+    )
+    conn.commit()
+    match_id = c.lastrowid
+    conn.close()
+    
+    # Відправляємо повідомлення обом гравцям
+    await update.message.reply_text(
+        f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent_name} ({opponent_type.capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
+        reply_markup=get_fight_keyboard(match_id)
+    )
+    await bot.send_message(
+        chat_id=opponent_id,
+        text=f"Матч розпочато! Ти ({opponent_name}, {opponent_type.capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
+        reply_markup=get_fight_keyboard(match_id)
+    )
+
+# Клавіатура для бою
+def get_fight_keyboard(match_id):
+    keyboard = [
+        [InlineKeyboardButton("Вдарити", callback_data=f"fight_{match_id}_attack")],
+        [InlineKeyboardButton("Ухилитися", callback_data=f"fight_{match_id}_dodge")],
+        [InlineKeyboardButton("Блок", callback_data=f"fight_{match_id}_block")],
+        [InlineKeyboardButton("Відпочинок", callback_data=f"fight_{match_id}_rest")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Обробка дій у бою
+async def handle_fight_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    callback_data = query.data.split("_")
+    match_id, action = int(callback_data[1]), callback_data[2]
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT player1_id, player2_id, player1_action, player2_action, status FROM matches WHERE match_id = ?", (match_id,))
+    match = c.fetchone()
+    if not match or match[4] != "active":
+        await query.message.reply_text("Матч завершено або не існує.")
+        conn.close()
+        return
+    
+    player1_id, player2_id, player1_action, player2_action = match
+    
+    # Зберігаємо дію гравця
+    if user_id == player1_id:
+        c.execute("UPDATE matches SET player1_action = ? WHERE match_id = ?", (action, match_id))
+    elif user_id == player2_id:
+        c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (action, match_id))
+    else:
+        await query.message.reply_text("Ти не учасник цього матчу!")
+        conn.close()
+        return
+    
+    conn.commit()
+    
+    # Перевіряємо, чи обидва гравці вибрали дії
+    c.execute("SELECT player1_action, player2_action FROM matches WHERE match_id = ?", (match_id,))
+    actions = c.fetchone()
+    if actions[0] and actions[1]:
+        # Обидва вибрали, обробляємо раунд
+        await process_round(match_id, context)
+    
+    conn.close()
+
+# Обробка раунду (спрощена, без повних формул)
+async def process_round(match_id, context):
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute(
+        """SELECT player1_id, player2_id, player1_action, player2_action, player1_health, player1_stamina,
+        player2_health, player2_stamina, current_round FROM matches WHERE match_id = ?""",
+        (match_id,)
+    )
+    match = c.fetchone()
+    player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num = match
+    
+    # Спрощена логіка (для тесту)
+    result_text = f"Раунд {round_num}\n"
+    result_text += f"Гравець 1: {p1_action}\n"
+    result_text += f"Гравець 2: {p2_action}\n"
+    
+    # Оновлюємо стан (приклад: атака зменшує здоров’я)
+    if p1_action == "attack" and p2_action != "dodge":
+        p2_health -= 10  # Тестове зменшення
+        result_text += "Гравець 1 вдарив Гравця 2!\n"
+    if p2_action == "attack" and p1_action != "dodge":
+        p1_health -= 10
+        result_text += "Гравець 2 вдарив Гравця 1!\n"
+    
+    # Оновлюємо матч
+    c.execute(
+        """UPDATE matches SET player1_health = ?, player1_stamina = ?, player2_health = ?, player2_stamina = ?,
+        player1_action = NULL, player2_action = NULL, current_round = ? WHERE match_id = ?""",
+        (p1_health, p1_stamina, p2_health, p2_stamina, round_num + 1, match_id)
+    )
+    conn.commit()
+    
+    # Відправляємо результати
+    status_text = (
+        f"Стан:\nГравець 1: HP {p1_health}, Виносливість {p1_stamina}\n"
+        f"Гравець 2: HP {p2_health}, Виносливість {p2_stamina}\n"
+        "Обери наступну дію (15 секунд):"
+    )
+    await bot.send_message(
+        chat_id=player1_id,
+        text=result_text + status_text,
+        reply_markup=get_fight_keyboard(match_id)
+    )
+    await bot.send_message(
+        chat_id=player2_id,
+        text=result_text + status_text,
+        reply_markup=get_fight_keyboard(match_id)
+    )
+    
+    conn.close()
 
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,7 +440,9 @@ async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app_telegram.add_handler(CommandHandler("start", start))
 app_telegram.add_handler(CommandHandler("create_account", create_account))
 app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_character_name))
-app_telegram.add_handler(CallbackQueryHandler(handle_fighter_type))
+app_telegram.add_handler(CallbackQueryHandler(handle_fighter_type, pattern="^(swarmer|out_boxer|counter_puncher)$"))
+app_telegram.add_handler(CallbackQueryHandler(handle_fight_action, pattern="^fight_"))
+app_telegram.add_handler(CommandHandler("start_match", start_match))
 app_telegram.add_handler(CommandHandler("delete_account", delete_account))
 app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
@@ -271,8 +457,9 @@ async def initialize_app():
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук (асинхронний)
+# Вебхук (синхронний)
 @app.route("/webhook", methods=["POST"])
+@async_to_sync
 async def webhook():
     try:
         update = Update.de_json(request.get_json(), bot)

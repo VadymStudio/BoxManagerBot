@@ -111,6 +111,14 @@ app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
+# Ініціалізація Application
+async def initialize_app_telegram():
+    await app_telegram.initialize()
+
+# Викликаємо ініціалізацію при запуску
+loop = asyncio.get_event_loop()
+loop.run_until_complete(initialize_app_telegram())
+
 # Вебхук
 @app.route("/webhook", methods=["POST"])
 async def webhook():
@@ -123,12 +131,6 @@ async def webhook():
 @app.route("/health")
 def health():
     return {"status": "ok"}
-
-# Ініціалізація Application перед запуском
-@app.before_first_request
-def initialize_application():
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(app_telegram.initialize())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

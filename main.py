@@ -108,6 +108,7 @@ async def set_admin_commands(user_id):
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received /start from user {update.effective_user.id}")
     user_id = update.effective_user.id
     if user_id in ADMIN_IDS and not context.user_data.get(f"admin_commands_set_{user_id}"):
         await set_admin_commands(user_id)
@@ -120,6 +121,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда /create_account
 async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received /create_account from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -136,6 +138,7 @@ async def create_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обробка текстового вводу для імені персонажа
 async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received text input from user {update.effective_user.id}: {update.message.text}")
     if not context.user_data.get("awaiting_character_name"):
         return
     if not await check_maintenance(update, context):
@@ -180,6 +183,7 @@ async def handle_character_name(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    logger.info(f"Received fighter type selection from user {query.from_user.id}: {query.data}")
     if not context.user_data.get("awaiting_fighter_type"):
         await query.message.reply_text("Помилка: вибір бійця вже завершено.")
         return
@@ -245,6 +249,7 @@ async def handle_fighter_type(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # Команда /delete_account
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received /delete_account from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -264,6 +269,7 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда /start_match
 async def start_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received /start_match from user {update.effective_user.id}")
     if not await check_maintenance(update, context):
         return
     user_id = update.effective_user.id
@@ -335,6 +341,7 @@ def get_fight_keyboard(match_id):
 async def handle_fight_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    logger.info(f"Received fight action from user {query.from_user.id}: {query.data}")
     user_id = query.from_user.id
     callback_data = query.data.split("_")
     match_id, action = int(callback_data[1]), callback_data[2]
@@ -426,7 +433,7 @@ async def process_round(match_id, context):
 # Адмінська команда /admin_setting
 async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    logger.info(f"User {user_id} tried /admin_setting. ADMIN_IDS: {ADMIN_IDS}")
+    logger.info(f"Received /admin_setting from user {user_id}. ADMIN_IDS: {ADMIN_IDS}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -439,6 +446,7 @@ async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Увімкнення технічних робіт
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"Received /maintenance_on from user {user_id}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -449,6 +457,7 @@ async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Вимкнення технічних робіт
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"Received /maintenance_off from user {user_id}")
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
@@ -462,13 +471,13 @@ app_telegram.add_handler(CommandHandler("create_account", create_account))
 app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_character_name))
 app_telegram.add_handler(CallbackQueryHandler(handle_fighter_type, pattern="^(swarmer|out_boxer|counter_puncher)$"))
 app_telegram.add_handler(CallbackQueryHandler(handle_fight_action, pattern="^fight_"))
-app_telegram.add_handler(CommandHandler("start_match", bank_match))
+app_telegram.add_handler(CommandHandler("start_match", start_match))
 app_telegram.add_handler(CommandHandler("delete_account", delete_account))
 app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
-# Вебхук для Flask
+# Вебхук для Flask (залишаємо для дебагу, але не використовуємо)
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -496,26 +505,19 @@ def disable_webhook_sync():
         response = httpx.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook")
         result = response.json()
         if result.get("ok"):
-            logger.info("Webhook disabled successfully (sync)")
+            logger.info("Webhook disabled successfully")
         else:
-            logger.error(f"Failed to disable webhook (sync): {result}")
+            logger.error(f"Failed to disable webhook: {result}")
     except Exception as e:
-        logger.error(f"Failed to disable webhook (sync): {e}")
+        logger.error(f"Failed to disable webhook: {e}")
 
 # Ініціалізація та запуск polling
 if __name__ == "__main__":
     import asyncio
-    disable_webhook_sync()  # Синхронне відключення вебхука
-    async def init_bot():
-        try:
-            await bot.delete_webhook()  # Асинхронне відключення для надійності
-            logger.info("Webhook disabled successfully (async)")
-        except Exception as e:
-            logger.error(f"Failed to disable webhook (async): {e}")
-        await bot.initialize()
-        await app_telegram.initialize()
-        logger.info("Starting polling...")
-        await app_telegram.run_polling()
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(init_bot())
+    disable_webhook_sync()  # Відключаємо вебхук
+    try:
+        logger.info("Starting bot initialization...")
+        app_telegram.run_polling(poll_interval=1.0, timeout=10)
+        logger.info("Polling started successfully")
+    except Exception as e:
+        logger.error(f"Polling failed: {e}")

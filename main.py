@@ -5,6 +5,7 @@ import sqlite3
 import os
 import asyncio
 import logging
+from asgiref.sync import async_to_sync
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,8 +32,11 @@ logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Ініціалізація Application
-app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
+# Налаштування HTTPX із більшим пулом з’єднань
+app_telegram = Application.builder().token(TELEGRAM_TOKEN).http_client_kwargs({
+    "limits": {"max_connections": 100, "max_keepalive_connections": 20},
+    "timeout": 30.0
+}).build()
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -57,8 +61,25 @@ async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return False
     return True
 
+# Налаштування кастомного меню для адміна
+async def set_admin_commands(user_id):
+    admin_commands = [
+        BotCommand("admin_setting", "Адмін-панель"),
+        BotCommand("maintenance_on", "Увімкнути тех. роботи"),
+        BotCommand("maintenance_off", "Вимкнути тех. роботи"),
+    ]
+    try:
+        await bot.set_my_commands(commands=admin_commands, scope={"type": "chat", "chat_id": user_id})
+        logger.info(f"Set admin commands for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to set commands for {user_id}: {e}")
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in ADMIN_IDS and not context.user_data.get(f"admin_commands_set_{user_id}"):
+        await set_admin_commands(user_id)
+        context.user_data[f"admin_commands_set_{user_id}"] = True
     if not await check_maintenance(update, context):
         return
     await update.message.reply_text(
@@ -141,7 +162,8 @@ async def admin_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Увімкнення технічних робіт
 async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     global maintenance_mode
@@ -150,26 +172,13 @@ async def maintenance_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Вимкнення технічних робіт
 async def maintenance_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("Доступ заборонено!")
         return
     global maintenance_mode
     maintenance_mode = False
     await update.message.reply_text("Технічні роботи вимкнено. Бот активний.")
-
-# Налаштування кастомного меню для адмінів
-async def set_admin_commands():
-    admin_commands = [
-        BotCommand("admin_setting", "Адмін-панель"),
-        BotCommand("maintenance_on", "Увімкнути тех. роботи"),
-        BotCommand("maintenance_off", "Вимкнути тех. роботи"),
-    ]
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.set_my_commands(commands=admin_commands, scope={"type": "chat", "chat_id": admin_id})
-            logger.info(f"Set admin commands for user {admin_id}")
-        except Exception as e:
-            logger.error(f"Failed to set commands for {admin_id}: {e}")
 
 # Додаємо обробники команд
 app_telegram.add_handler(CommandHandler("start", start))
@@ -184,14 +193,14 @@ app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 async def initialize_app():
     await bot.initialize()
     await app_telegram.initialize()
-    await set_admin_commands()
 
 # Викликаємо ініціалізацію при запуску
 loop = asyncio.get_event_loop()
 loop.run_until_complete(initialize_app())
 
-# Вебхук (асинхронний)
+# Вебхук (синхронний)
 @app.route("/webhook", methods=["POST"])
+@async_to_sync
 async def webhook():
     try:
         update = Update.de_json(request.get_json(), bot)

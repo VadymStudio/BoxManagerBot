@@ -653,12 +653,12 @@ def get_status_text(name, fighter_type, health, stamina, stats):
     return (
         f"{name} ({fighter_type.capitalize()}):\n"
         f"Здоров’я: {health:.1f}/{max_health:.1f}, Енергія: {stamina:.1f}/100\n"
-        f"📊 Прямий удар: -8 енергії, урон {8 * strength:.1f}, шанс {min(100, 90 * hit_modifier):.1f}%\n"
-        f"📊 Апперкот: -12 енергії, урон {12 * strength:.1f}, шанс {min(100, 75 * hit_modifier):.1f}%\n"
-        f"📊 Хук: -18 енергії, урон {18 * strength:.1f}, шанс {min(100, 60 * hit_modifier):.1f}%\n"
-        f"📊 Ухилення: -5 енергії, шанс {min(100, 40 * reaction * punch_speed):.1f}%\n"
+        f"📊 Прямий удар: -6 енергії, урон {7 * strength:.1f}, шанс {min(100, 90 * hit_modifier):.1f}%\n"
+        f"📊 Апперкот: -19 енергії, урон {25 * strength:.1f}, шанс {min(100, 60 * hit_modifier):.1f}%\n"
+        f"📊 Хук: -15 енергії, урон {19 * strength:.1f}, шанс {min(100, 75 * hit_modifier):.1f}%\n"
+        f"📊 Ухилення: -6 енергії, шанс {min(100, 40 * reaction * punch_speed):.1f}%\n"
         f"📊 Блок: -5 енергії, зменшення урону на {0.5 * stamina_stat * strength:.1f}\n"
-        f"📊 Відпочинок: +15 енергії"
+        f"📊 Відпочинок: +30 енергії"
     )
 
 # Обробка раунду
@@ -699,9 +699,9 @@ async def process_round(match_id, timed_out=False):
         result_text += "Час минув! Обидва гравці відпочивають.\n"
     
     attack_params = {
-        "jab": {"base_damage": 8, "stamina_cost": 8, "base_hit_chance": 0.9},
-        "uppercut": {"base_damage": 12, "stamina_cost": 12, "base_hit_chance": 0.75},
-        "hook": {"base_damage": 18, "stamina_cost": 18, "base_hit_chance": 0.6}
+        "jab": {"base_damage": 7, "stamina_cost": 6, "base_hit_chance": 0.9},
+        "uppercut": {"base_damage": 25, "stamina_cost": 19, "base_hit_chance": 0.6},
+        "hook": {"base_damage": 19, "stamina_cost": 15, "base_hit_chance": 0.75}
     }
     
     # Обробка дії Гравця 1
@@ -729,13 +729,13 @@ async def process_round(match_id, timed_out=False):
                 p2_health -= damage
                 result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Ухилення не вдалося. Урон: {damage:.1f}\n"
     elif p1_action == "dodge":
-        p1_stamina -= 5
+        p1_stamina -= 6
         result_text += f"{p1_name} намагається ухилитися.\n"
     elif p1_action == "block":
         p1_stamina -= 5
         result_text += f"{p1_name} блокує.\n"
     elif p1_action == "rest":
-        p1_stamina = min(p1_stamina + 15 * p1_stamina_stat, 100)
+        p1_stamina = min(p1_stamina + 30 * p1_stamina_stat, 100)
         result_text += f"{p1_name} відпочиває.\n"
     
     # Обробка дії Гравця 2
@@ -942,6 +942,11 @@ async def webhook(request):
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return web.json_response({"ok": False}, status=500)
+
+# Налаштування aiohttp
+app = web.Application()
+app.router.add_get("/health", health)
+app.router.add_post("/webhook", webhook)
 
 # Асинхронна функція для запуску
 async def main():

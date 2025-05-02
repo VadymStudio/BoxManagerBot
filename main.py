@@ -606,16 +606,17 @@ def disable_webhook_sync():
     except Exception as e:
         logger.error(f"Failed to disable webhook: {e}")
 
-# Ініціалізація та запуск polling
-if __name__ == "__main__":
+# Асинхронна функція для запуску бота
+async def main():
     logger.info("Starting bot...")
     disable_webhook_sync()  # Відключаємо вебхук
-    try:
-        logger.info("Checking Telegram API...")
-        asyncio.run(check_telegram_api())
-        logger.info("Initializing bot and starting polling...")
-        app_telegram.run_polling(poll_interval=0.2, timeout=10, drop_pending_updates=True)
-        logger.info("Polling started successfully")
-    except Exception as e:
-        logger.error(f"Polling failed: {e}")
-        raise
+    await check_telegram_api()  # Перевіряємо Telegram API
+    logger.info("Initializing bot and starting polling...")
+    await app_telegram.initialize()
+    await app_telegram.start()
+    await app_telegram.updater.start_polling(poll_interval=0.2, timeout=10, drop_pending_updates=True)
+    logger.info("Polling started successfully")
+
+# Запуск бота
+if __name__ == "__main__":
+    asyncio.run(main())

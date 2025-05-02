@@ -46,6 +46,9 @@ bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)  # bot у конструкторі
 
+# Глобальний event loop
+loop = asyncio.get_event_loop()
+
 # Визначення станів
 class CharacterCreation(StatesGroup):
     awaiting_character_name = State()
@@ -100,6 +103,7 @@ maintenance_mode = False
 async def check_maintenance(message: types.Message):
     if maintenance_mode and message.from_user.id not in ADMIN_IDS:
         await message.reply("Бот на технічних роботах. Спробуй пізніше.")
+        logger.debug(f"Maintenance mode blocked user {message.from_user.id}")
         return False
     return True
 
@@ -113,6 +117,7 @@ async def start(message: types.Message):
     await message.reply(
         "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт, або /start_match, щоб почати бій."
     )
+    logger.debug(f"Sent /start response to user {user_id}")
 
 # Команда /create_account
 @dp.message(Command("create_account"))
@@ -126,11 +131,13 @@ async def create_account(message: types.Message, state: FSMContext):
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if c.fetchone():
         await message.reply("Ти вже маєш акаунт! Використай /delete_account, щоб видалити його.")
+        logger.debug(f"User {user_id} already has an account")
         conn.close()
         return
     conn.close()
     await message.reply("Введи ім'я персонажа (нік у грі):")
     await state.set_state(CharacterCreation.awaiting_character_name)
+    logger.debug(f"Prompted user {user_id} for character name")
 
 # Обробка імені персонажа
 @dp.message(CharacterCreation.awaiting_character_name)
@@ -145,6 +152,7 @@ async def handle_character_name(message: types.Message, state: FSMContext):
     c.execute("SELECT character_name FROM users WHERE character_name = ?", (character_name,))
     if c.fetchone():
         await message.reply("Цей нік уже зайнятий. Вибери інший.")
+        logger.debug(f"Character name {character_name} already taken")
         conn.close()
         return
     try:
@@ -167,8 +175,10 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         ])
         await message.reply(fighter_descriptions, reply_markup=keyboard, parse_mode="Markdown")
         await state.set_state(CharacterCreation.awaiting_fighter_type)
+        logger.debug(f"Sent fighter type selection to user {user_id}")
     except sqlite3.IntegrityError:
         await message.reply("Цей нік уже зайнятий. Вибери інший.")
+        logger.debug(f"Integrity error for character name {character_name}")
     finally:
         conn.close()
 
@@ -229,8 +239,10 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
         conn.commit()
         await callback.message.reply(f"Акаунт створено! Персонаж: {character_name}, Тип: {fighter_type.capitalize()}")
         await callback.answer()
+        logger.debug(f"Created account for user {user_id}: {character_name}, {fighter_type}")
     except sqlite3.IntegrityError:
         await callback.message.reply("Помилка при збереженні бійця. Спробуй ще раз.")
+        logger.debug(f"Integrity error for fighter type {fighter_type} for user {user_id}")
         await callback.answer()
     finally:
         conn.close()
@@ -248,6 +260,7 @@ async def delete_account(message: types.Message):
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if not c.fetchone():
         await message.reply("У тебе немає акаунта!")
+        logger.debug(f"No account found for user {user_id}")
         conn.close()
         return
     c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
@@ -256,6 +269,7 @@ async def delete_account(message: types.Message):
     conn.commit()
     conn.close()
     await message.reply("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
+    logger.debug(f"Deleted account for user {user_id}")
 
 # Команда /start_match
 @dp.message(Command("start_match"))
@@ -270,12 +284,14 @@ async def start_match(message: types.Message):
     user = c.fetchone()
     if not user:
         await message.reply("Спочатку створи акаунт за допомогою /create_account!")
+        logger.debug(f"No account for user {user_id} for /start_match")
         conn.close()
         return
     
     c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
     if c.fetchone():
         await message.reply("Ти вже в матчі! Закінчи поточний бій.")
+        logger.debug(f"User {user_id} already in active match")
         conn.close()
         return
     
@@ -283,6 +299,7 @@ async def start_match(message: types.Message):
     opponents = c.fetchall()
     if not opponents:
         await message.reply("Немає доступних суперників. Спробуй пізніше.")
+        logger.debug(f"No opponents available for user {user_id}")
         conn.close()
         return
     
@@ -314,6 +331,7 @@ async def start_match(message: types.Message):
         text=f"Матч розпочато! Ти ({opponent_name}, {opponent_type.capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
         reply_markup=keyboard
     )
+    logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
 
 # Клавіатура для бою
 def get_fight_keyboard(match_id):
@@ -339,6 +357,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
     match = c.fetchone()
     if not match or match[4] != "active":
         await callback.message.reply("Матч завершено або не існує.")
+        logger.debug(f"Match {match_id} not active or does not exist")
         conn.close()
         await callback.answer()
         return
@@ -348,6 +367,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
     if time.time() > action_deadline:
         await callback.message.reply("Час для дії минув! Раунд завершено автоматично.")
         await process_round(match_id, timed_out=True)
+        logger.debug(f"Match {match_id} round timed out")
         conn.close()
         await callback.answer()
         return
@@ -358,6 +378,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
         c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (action, match_id))
     else:
         await callback.message.reply("Ти не учасник цього матчу!")
+        logger.debug(f"User {user_id} not in match {match_id}")
         conn.close()
         await callback.answer()
         return
@@ -371,6 +392,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
     
     conn.close()
     await callback.answer()
+    logger.debug(f"Processed fight action {action} for match {match_id} by user {user_id}")
 
 # Обробка раунду
 async def process_round(match_id, timed_out=False):
@@ -386,6 +408,7 @@ async def process_round(match_id, timed_out=False):
     
     if time.time() > start_time + 180:
         await end_match(match_id, player1_id, player2_id, p1_health, p2_health)
+        logger.debug(f"Match {match_id} ended due to time limit")
         conn.close()
         return
     
@@ -454,6 +477,7 @@ async def process_round(match_id, timed_out=False):
     
     if p1_health <= 0 or p2_health <= 0:
         await end_match(match_id, player1_id, player2_id, p1_health, p2_health)
+        logger.debug(f"Match {match_id} ended due to health depletion")
         conn.close()
         return
     
@@ -481,6 +505,7 @@ async def process_round(match_id, timed_out=False):
         text=result_text + status_text,
         reply_markup=keyboard
     )
+    logger.debug(f"Processed round {round_num} for match {match_id}")
     
     conn.close()
 
@@ -505,6 +530,7 @@ async def end_match(match_id, player1_id, player2_id, p1_health, p2_health):
     
     await bot.send_message(chat_id=player1_id, text=result)
     await bot.send_message(chat_id=player2_id, text=result)
+    logger.debug(f"Ended match {match_id}: {result}")
 
 # Адмінська команда /admin_setting
 @dp.message(Command("admin_setting"))
@@ -513,12 +539,14 @@ async def admin_setting(message: types.Message):
     logger.debug(f"Received /admin_setting from user {user_id}")
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
+        logger.debug(f"Access denied for /admin_setting for user {user_id}")
         return
     await message.reply(
         "Адмін-панель:\n"
         "/maintenance_on - Увімкнути технічні роботи\n"
         "/maintenance_off - Вимкнути технічні роботи"
     )
+    logger.debug(f"Sent admin panel to user {user_id}")
 
 # Увімкнення технічних робіт
 @dp.message(Command("maintenance_on"))
@@ -527,10 +555,12 @@ async def maintenance_on(message: types.Message):
     logger.debug(f"Received /maintenance_on from user {user_id}")
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
+        logger.debug(f"Access denied for /maintenance_on for user {user_id}")
         return
     global maintenance_mode
     maintenance_mode = True
     await message.reply("Технічні роботи увімкнено. Бот призупинено.")
+    logger.debug("Maintenance mode enabled")
 
 # Вимкнення технічних робіт
 @dp.message(Command("maintenance_off"))
@@ -539,10 +569,12 @@ async def maintenance_off(message: types.Message):
     logger.debug(f"Received /maintenance_off from user {user_id}")
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
+        logger.debug(f"Access denied for /maintenance_off for user {user_id}")
         return
     global maintenance_mode
     maintenance_mode = False
     await message.reply("Технічні роботи вимкнено. Бот активний.")
+    logger.debug("Maintenance mode disabled")
 
 # Health check для UptimeRobot
 @app.route("/health", methods=["GET"])
@@ -558,13 +590,10 @@ def webhook():
         data = request.get_json()
         logger.debug(f"Webhook data: {data}")
         update = types.Update(**data)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(dp.feed_update(bot, update))
-            logger.debug("Update processed successfully")
-        finally:
-            loop.close()
+        # Використовуємо run_coroutine_threadsafe для безпечного виклику в синхронному контексті
+        future = asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
+        future.result()  # Чекаємо завершення
+        logger.debug("Update processed successfully")
         return jsonify({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")

@@ -8,7 +8,7 @@ import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -112,6 +112,32 @@ async def reset_state(message: types.Message, state: FSMContext):
         logger.debug(f"Resetting state for user {message.from_user.id} from {current_state}")
         await state.clear()
 
+# Налаштування меню команд
+async def setup_bot_commands():
+    # Команди для всіх користувачів
+    user_commands = [
+        BotCommand(command="/start", description="Почати роботу з ботом"),
+        BotCommand(command="/create_account", description="Створити акаунт"),
+        BotCommand(command="/delete_account", description="Видалити акаунт"),
+        BotCommand(command="/start_match", description="Почати матч")
+    ]
+    
+    # Команди для адмінів
+    admin_commands = user_commands + [
+        BotCommand(command="/admin_setting", description="Адмін-панель"),
+        BotCommand(command="/maintenance_on", description="Увімкнути технічні роботи"),
+        BotCommand(command="/maintenance_off", description="Вимкнути технічні роботи")
+    ]
+    
+    # Встановлення команд для всіх користувачів
+    await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
+    logger.info("Set default commands for all users")
+    
+    # Встановлення команд для адмінів
+    for admin_id in ADMIN_IDS:
+        await bot.set_my_commands(commands=admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        logger.info(f"Set admin commands for user {admin_id}")
+
 # Команда /start
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
@@ -121,62 +147,9 @@ async def start(message: types.Message, state: FSMContext):
     if not await check_maintenance(message):
         return
     await message.reply(
-        "Вітаємо у Box Manager Online! Використовуй /menu, щоб відкрити меню команд."
+        "Вітаємо у Box Manager Online! Відкрий меню команд, щоб почати."
     )
     logger.debug(f"Sent /start response to user {user_id}")
-
-# Команда /menu
-@dp.message(Command("menu"))
-async def show_menu(message: types.Message, state: FSMContext):
-    logger.debug(f"Received /menu from user {message.from_user.id}")
-    await reset_state(message, state)
-    user_id = message.from_user.id
-    if not await check_maintenance(message):
-        return
-    
-    # Базові кнопки для всіх користувачів
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("Старт", callback_data="cmd_start")],
-        [InlineKeyboardButton("Створити акаунт", callback_data="cmd_create_account")],
-        [InlineKeyboardButton("Видалити акаунт", callback_data="cmd_delete_account")],
-        [InlineKeyboardButton("Почати матч", callback_data="cmd_start_match")]
-    ])
-    
-    # Додаткові кнопки для адмінів
-    if user_id in ADMIN_IDS:
-        keyboard.inline_keyboard.extend([
-            [InlineKeyboardButton("Адмін-панель", callback_data="cmd_admin_setting")],
-            [InlineKeyboardButton("Технічні роботи (увімкнути)", callback_data="cmd_maintenance_on")],
-            [InlineKeyboardButton("Технічні роботи (вимкнути)", callback_data="cmd_maintenance_off")]
-        ])
-    
-    await message.reply("Обери команду:", reply_markup=keyboard)
-    logger.debug(f"Sent menu to user {user_id}")
-
-# Обробка вибору команд із меню
-@dp.callback_query(lambda c: c.data.startswith("cmd_"))
-async def handle_menu_selection(callback: types.CallbackQuery, state: FSMContext):
-    logger.debug(f"Received menu selection from user {callback.from_user.id}: {callback.data}")
-    user_id = callback.from_user.id
-    command = callback.data[4:]  # Видаляємо "cmd_" з callback_data
-    
-    commands = {
-        "start": start,
-        "create_account": create_account,
-        "delete_account": delete_account,
-        "start_match": start_match,
-        "admin_setting": admin_setting,
-        "maintenance_on": maintenance_on,
-        "maintenance_off": maintenance_off
-    }
-    
-    if command in commands:
-        await commands[command](callback.message, state)
-    else:
-        await callback.message.reply("Невідома команда!")
-        logger.debug(f"Unknown command {command} from user {user_id}")
-    
-    await callback.answer()
 
 # Команда /create_account
 @dp.message(Command("create_account"))
@@ -741,8 +714,10 @@ async def main():
             webhook_url = "https://boxmanagerbot.onrender.com/webhook"
             await bot.set_webhook(url=webhook_url)
             logger.info(f"Webhook set to {webhook_url}")
+            await setup_bot_commands()
+            logger.info("Bot commands set up successfully")
     except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+        logger.error(f"Failed to set webhook or commands: {e}")
         raise
 
 if __name__ == "__main__":

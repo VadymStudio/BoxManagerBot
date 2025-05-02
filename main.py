@@ -45,8 +45,9 @@ bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
-# Список користувачів, які шукають матч
+# Список користувачів, які шукають матч, і подія для сповіщення
 searching_users = []
+matchmaking_event = asyncio.Event()
 
 # Визначення станів
 class CharacterCreation(StatesGroup):
@@ -91,6 +92,8 @@ def init_db():
         FOREIGN KEY (player1_id) REFERENCES users (user_id),
         FOREIGN KEY (player2_id) REFERENCES users (user_id)
     )""")
+    # Очищення активних матчів при запуску
+    c.execute("DELETE FROM matches WHERE status = 'active'")
     conn.commit()
     conn.close()
 
@@ -119,7 +122,8 @@ async def setup_bot_commands():
         BotCommand(command="/start", description="Почати роботу з ботом"),
         BotCommand(command="/create_account", description="Створити акаунт"),
         BotCommand(command="/delete_account", description="Видалити акаунт"),
-        BotCommand(command="/start_match", description="Почати матч")
+        BotCommand(command="/start_match", description="Почати матч"),
+        BotCommand(command="/refresh_commands", description="Оновити меню команд")
     ]
     
     admin_commands = user_commands + [
@@ -129,6 +133,9 @@ async def setup_bot_commands():
     ]
     
     try:
+        # Очищення старих команд
+        await bot.delete_my_commands(scope=BotCommandScopeDefault())
+        logger.info("Cleared default commands")
         await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
         logger.info("Set default commands for all users")
     except TelegramBadRequest as e:
@@ -136,10 +143,26 @@ async def setup_bot_commands():
     
     for admin_id in ADMIN_IDS:
         try:
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
             await bot.set_my_commands(commands=admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
             logger.info(f"Set admin commands for user {admin_id}")
         except TelegramBadRequest as e:
             logger.error(f"Failed to set admin commands for user {admin_id}: {e}")
+
+# Команда /refresh_commands
+@dp.message(Command("refresh_commands"))
+async def refresh_commands(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /refresh_commands from user {message.from_user.id}")
+    await reset_state(message, state)
+    if not await check_maintenance(message):
+        return
+    try:
+        await setup_bot_commands()
+        await message.reply("Меню команд оновлено! Відкрий меню команд (📋).")
+        logger.debug(f"Refreshed commands for user {message.from_user.id}")
+    except Exception as e:
+        await message.reply("Помилка при оновленні команд. Спробуй ще раз.")
+        logger.error(f"Error refreshing commands for user {message.from_user.id}: {e}")
 
 # Команда /start
 @dp.message(Command("start"))
@@ -150,7 +173,7 @@ async def start(message: types.Message, state: FSMContext):
     if not await check_maintenance(message):
         return
     await message.reply(
-        "Вітаємо у Box Manager Online! Відкрий меню команд, щоб почати."
+        "Вітаємо у Box Manager Online! Відкрий меню команд (📋), щоб почати."
     )
     logger.debug(f"Sent /start response to user {user_id}")
 
@@ -356,11 +379,13 @@ async def start_match(message: types.Message, state: FSMContext):
     
     searching_users.append(user_id)
     logger.debug(f"User {user_id} added to searching_users: {searching_users}")
+    matchmaking_event.set()  # Сповіщення про нового гравця
     
-    await message.reply("Пошук суперника... (макс. 60 секунд)")
+    await message.reply("Пошук суперника... (макс. 30 секунд)")
     
-    start_time = time.time()
-    while time.time() - start_time < 60:
+    try:
+        # Очікування другого гравця або таймаут
+        await asyncio.wait_for(matchmaking_event.wait(), timeout=30)
         for opponent_id in searching_users:
             if opponent_id != user_id:
                 if user_id in searching_users:
@@ -411,21 +436,26 @@ async def start_match(message: types.Message, state: FSMContext):
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
                 return
         
-        await asyncio.sleep(1)
-    
-    if user_id in searching_users:
-        searching_users.remove(user_id)
-    await message.reply("Суперник не знайдений. Спробуй ще раз.")
-    logger.debug(f"Search timeout for user {user_id}")
-    conn.close()
+        # Якщо суперник не знайдений
+        if user_id in searching_users:
+            searching_users.remove(user_id)
+        await message.reply("Суперник не знайдений. Спробуй ще раз.")
+        logger.debug(f"Search timeout for user {user_id}")
+        conn.close()
+    except asyncio.TimeoutError:
+        if user_id in searching_users:
+            searching_users.remove(user_id)
+        await message.reply("Суперник не знайдений. Спробуй ще раз.")
+        logger.debug(f"Search timeout for user {user_id}")
+        conn.close()
 
 # Клавіатура для бою
 def get_fight_keyboard(match_id):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("Вдарити", callback_data=f"fight_{match_id}_attack")],
-        [InlineKeyboardButton("Ухилитися", callback_data=f"fight_{match_id}_dodge")],
-        [InlineKeyboardButton("Блок", callback_data=f"fight_{match_id}_block")],
-        [InlineKeyboardButton("Відпочинок", callback_data=f"fight_{match_id}_rest")]
+        [InlineKeyboardButton(text="Вдарити", callback_data=f"fight_{match_id}_attack")],
+        [InlineKeyboardButton(text="Ухилитися", callback_data=f"fight_{match_id}_dodge")],
+        [InlineKeyboardButton(text="Блок", callback_data=f"fight_{match_id}_block")],
+        [InlineKeyboardButton(text="Відпочинок", callback_data=f"fight_{match_id}_rest")]
     ])
     return keyboard
 

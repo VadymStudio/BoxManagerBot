@@ -6,7 +6,7 @@ import time
 import asyncio
 from flask import Flask, jsonify
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -173,7 +173,7 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         conn.close()
 
 # Обробка вибору типу бійця
-@dp.callback_query(CharacterCreation.awaiting_fighter_type, Text(["swarmer", "out_boxer", "counter_puncher"]))
+@dp.callback_query(CharacterCreation.awaiting_fighter_type, lambda c: c.data in ["swarmer", "out_boxer", "counter_puncher"])
 async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
     logger.debug(f"Received fighter type selection from user {callback.from_user.id}: {callback.data}")
     user_id = callback.from_user.id
@@ -326,7 +326,7 @@ def get_fight_keyboard(match_id):
     return keyboard
 
 # Обробка дій у бою
-@dp.callback_query(Text(startswith="fight_"))
+@dp.callback_query(lambda c: c.data.startswith("fight_"))
 async def handle_fight_action(callback: types.CallbackQuery):
     logger.debug(f"Received fight action from user {callback.from_user.id}: {callback.data}")
     user_id = callback.from_user.id

@@ -4,7 +4,7 @@ import random
 import sqlite3
 import time
 import asyncio
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -44,7 +44,7 @@ app = Flask(__name__)
 # Ініціалізація бота
 bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)  # Без bot у конструкторі
+dp = Dispatcher(bot=bot, storage=storage)  # bot у конструкторі
 
 # Визначення станів
 class CharacterCreation(StatesGroup):
@@ -549,19 +549,35 @@ async def maintenance_off(message: types.Message):
 def health():
     return jsonify({"status": "ok"})
 
-# Асинхронна функція для запуску polling
+# Webhook endpoint
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        data = request.get_json()
+        update = types.Update(**data)
+        asyncio.run_coroutine_threadsafe(dp.process_update(update), asyncio.get_event_loop())
+        return jsonify({"ok": True})
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"ok": False}), 500
+
+# Асинхронна функція для запуску
 async def main():
     logger.info("Starting bot...")
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook disabled successfully")
-        bot_info = await bot.get_me()
-        logger.info(f"Bot info: {bot_info}")
-        await dp.start_polling(bot=bot, timeout=10, relax=0.2, drop_pending_updates=True)
-        logger.info("Polling started successfully")
+        async with bot.session:  # Закриваємо сесію коректно
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook disabled successfully")
+            bot_info = await bot.get_me()
+            logger.info(f"Bot info: {bot_info}")
+            webhook_url = "https://boxmanagerbot.onrender.com/webhook"
+            await bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
-        logger.error(f"Polling failed: {e}")
+        logger.error(f"Failed to set webhook: {e}")
         raise
 
 if __name__ == "__main__":
     asyncio.run(main())
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)

@@ -12,6 +12,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
 
 # Завантаження змінних із .env
@@ -130,13 +131,19 @@ async def setup_bot_commands():
     ]
     
     # Встановлення команд для всіх користувачів
-    await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
-    logger.info("Set default commands for all users")
+    try:
+        await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
+        logger.info("Set default commands for all users")
+    except TelegramBadRequest as e:
+        logger.error(f"Failed to set default commands: {e}")
     
     # Встановлення команд для адмінів
     for admin_id in ADMIN_IDS:
-        await bot.set_my_commands(commands=admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
-        logger.info(f"Set admin commands for user {admin_id}")
+        try:
+            await bot.set_my_commands(commands=admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+            logger.info(f"Set admin commands for user {admin_id}")
+        except TelegramBadRequest as e:
+            logger.error(f"Failed to set admin commands for user {admin_id}: {e}")
 
 # Команда /start
 @dp.message(Command("start"))

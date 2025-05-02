@@ -4,7 +4,7 @@ import random
 import sqlite3
 import time
 import asyncio
-from flask import Flask, jsonify, request
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -38,16 +38,10 @@ if not TELEGRAM_TOKEN:
 ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
 logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 
-# Ініціалізація Flask
-app = Flask(__name__)
-
 # Ініціалізація бота
 bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(bot=bot, storage=storage)  # bot у конструкторі
-
-# Глобальний event loop
-loop = asyncio.get_event_loop()
+dp = Dispatcher(bot=bot, storage=storage)
 
 # Визначення станів
 class CharacterCreation(StatesGroup):
@@ -577,33 +571,34 @@ async def maintenance_off(message: types.Message):
     logger.debug("Maintenance mode disabled")
 
 # Health check для UptimeRobot
-@app.route("/health", methods=["GET"])
-def health():
+async def health(request):
     logger.debug("Received /health request")
-    return jsonify({"status": "ok"})
+    return web.json_response({"status": "ok"})
 
 # Webhook endpoint
-@app.route("/webhook", methods=["POST"])
-def webhook():
+async def webhook(request):
     logger.debug("Received webhook request")
     try:
-        data = request.get_json()
+        data = await request.json()
         logger.debug(f"Webhook data: {data}")
         update = types.Update(**data)
-        # Використовуємо run_coroutine_threadsafe для безпечного виклику в синхронному контексті
-        future = asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), loop)
-        future.result()  # Чекаємо завершення
+        await dp.feed_update(bot, update)
         logger.debug("Update processed successfully")
-        return jsonify({"ok": True})
+        return web.json_response({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return jsonify({"ok": False}), 500
+        return web.json_response({"ok": False}, status=500)
+
+# Налаштування aiohttp
+app = web.Application()
+app.router.add_get("/health", health)
+app.router.add_post("/webhook", webhook)
 
 # Асинхронна функція для запуску
 async def main():
     logger.info("Starting bot...")
     try:
-        async with bot.session:  # Закриваємо сесію коректно
+        async with bot.session:
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("Webhook disabled successfully")
             bot_info = await bot.get_me()
@@ -618,4 +613,4 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    web.run_app(app, host="0.0.0.0", port=port)

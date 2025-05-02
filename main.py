@@ -115,7 +115,6 @@ async def reset_state(message: types.Message, state: FSMContext):
 
 # Налаштування меню команд
 async def setup_bot_commands():
-    # Команди для всіх користувачів
     user_commands = [
         BotCommand(command="/start", description="Почати роботу з ботом"),
         BotCommand(command="/create_account", description="Створити акаунт"),
@@ -123,21 +122,18 @@ async def setup_bot_commands():
         BotCommand(command="/start_match", description="Почати матч")
     ]
     
-    # Команди для адмінів
     admin_commands = user_commands + [
         BotCommand(command="/admin_setting", description="Адмін-панель"),
         BotCommand(command="/maintenance_on", description="Увімкнути технічні роботи"),
         BotCommand(command="/maintenance_off", description="Вимкнути технічні роботи")
     ]
     
-    # Встановлення команд для всіх користувачів
     try:
         await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
         logger.info("Set default commands for all users")
     except TelegramBadRequest as e:
         logger.error(f"Failed to set default commands: {e}")
     
-    # Встановлення команд для адмінів
     for admin_id in ADMIN_IDS:
         try:
             await bot.set_my_commands(commands=admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
@@ -188,13 +184,11 @@ async def handle_character_name(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     character_name = message.text.strip()
 
-    # Перевірка, чи введено команду
     if character_name.startswith('/'):
         await message.reply("Будь ласка, введи нік, а не команду. Спробуй ще раз.")
         logger.debug(f"User {user_id} entered command {character_name} instead of nickname")
         return
 
-    # Валідація ніку
     if not re.match(r'^[a-zA-Z0-9_]{1,20}$', character_name):
         await message.reply("Нік може містити тільки літери, цифри, символ '_', до 20 символів. Спробуй ще раз.")
         logger.debug(f"Invalid character name {character_name} from user {user_id}")
@@ -222,9 +216,9 @@ async def handle_character_name(message: types.Message, state: FSMContext):
             "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5). Сила: 1.25, здоров’я: 100, воля: 1.2."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("Swarmer", callback_data="swarmer")],
-            [InlineKeyboardButton("Out-boxer", callback_data="out_boxer")],
-            [InlineKeyboardButton("Counter-puncher", callback_data="counter_puncher")],
+            [InlineKeyboardButton(text="Swarmer", callback_data="swarmer")],
+            [InlineKeyboardButton(text="Out-boxer", callback_data="out_boxer")],
+            [InlineKeyboardButton(text="Counter-puncher", callback_data="counter_puncher")],
         ])
         await message.reply(fighter_descriptions, reply_markup=keyboard, parse_mode="Markdown")
         await state.set_state(CharacterCreation.awaiting_fighter_type)
@@ -247,11 +241,9 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
     user_data = await state.get_data()
     character_name = user_data.get("character_name")
     
-    # Характеристики бійців
     fighter_stats = {
         "swarmer": {
             "stamina": 1.1,
-            "total_stamina": 100,
             "strength": 1.5,
             "reaction": 1.1,
             "health": 120,
@@ -260,7 +252,6 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
         },
         "out_boxer": {
             "stamina": 1.5,
-            "total_stamina": 100,
             "strength": 1.15,
             "reaction": 1.1,
             "health": 200,
@@ -269,7 +260,6 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
         },
         "counter_puncher": {
             "stamina": 1.15,
-            "total_stamina": 100,
             "strength": 1.25,
             "reaction": 1.5,
             "health": 100,
@@ -341,7 +331,6 @@ async def start_match(message: types.Message, state: FSMContext):
         return
     user_id = message.from_user.id
     
-    # Перевірка акаунта
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
@@ -352,7 +341,6 @@ async def start_match(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    # Перевірка активного матчу
     c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
     if c.fetchone():
         await message.reply("Ти вже в матчі! Закінчи поточний бій.")
@@ -360,31 +348,27 @@ async def start_match(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    # Перевірка, чи користувач уже шукає матч
     if user_id in searching_users:
         await message.reply("Ти вже шукаєш суперника! Зачекай.")
         logger.debug(f"User {user_id} already in searching_users")
         conn.close()
         return
     
-    # Додавання користувача до пошуку
     searching_users.append(user_id)
     logger.debug(f"User {user_id} added to searching_users: {searching_users}")
     
-    # Пошук суперника
     await message.reply("Пошук суперника... (макс. 60 секунд)")
     
     start_time = time.time()
     while time.time() - start_time < 60:
-        # Знайти іншого користувача, який шукає
         for opponent_id in searching_users:
             if opponent_id != user_id:
-                # Знайдено суперника
-                searching_users.remove(user_id)
-                searching_users.remove(opponent_id)
+                if user_id in searching_users:
+                    searching_users.remove(user_id)
+                if opponent_id in searching_users:
+                    searching_users.remove(opponent_id)
                 logger.debug(f"Match found: {user_id} vs {opponent_id}")
                 
-                # Отримати дані суперника
                 c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (opponent_id,))
                 opponent = c.fetchone()
                 if not opponent:
@@ -393,10 +377,9 @@ async def start_match(message: types.Message, state: FSMContext):
                     conn.close()
                     return
                 
-                # Перевірка статистики
-                c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
+                c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
                 player_stats = c.fetchone()
-                c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
+                c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
                 opponent_stats = c.fetchone()
                 
                 if not player_stats or not opponent_stats:
@@ -405,7 +388,6 @@ async def start_match(message: types.Message, state: FSMContext):
                     conn.close()
                     return
                 
-                # Створити матч
                 action_deadline = time.time() + 15
                 c.execute(
                     """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
@@ -416,7 +398,6 @@ async def start_match(message: types.Message, state: FSMContext):
                 match_id = c.lastrowid
                 conn.close()
                 
-                # Відправити повідомлення
                 keyboard = get_fight_keyboard(match_id)
                 await message.reply(
                     f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
@@ -430,11 +411,10 @@ async def start_match(message: types.Message, state: FSMContext):
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
                 return
         
-        # Чекати 1 секунду перед наступною перевіркою
         await asyncio.sleep(1)
     
-    # Таймаут пошуку
-    searching_users.remove(user_id)
+    if user_id in searching_users:
+        searching_users.remove(user_id)
     await message.reply("Суперник не знайдений. Спробуй ще раз.")
     logger.debug(f"Search timeout for user {user_id}")
     conn.close()

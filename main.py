@@ -44,6 +44,9 @@ bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
+# Список користувачів, які шукають матч
+searching_users = []
+
 # Визначення станів
 class CharacterCreation(StatesGroup):
     awaiting_character_name = State()
@@ -118,9 +121,62 @@ async def start(message: types.Message, state: FSMContext):
     if not await check_maintenance(message):
         return
     await message.reply(
-        "Вітаємо у Box Manager Online! Використовуй /create_account, щоб створити акаунт, або /start_match, щоб почати бій."
+        "Вітаємо у Box Manager Online! Використовуй /menu, щоб відкрити меню команд."
     )
     logger.debug(f"Sent /start response to user {user_id}")
+
+# Команда /menu
+@dp.message(Command("menu"))
+async def show_menu(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /menu from user {message.from_user.id}")
+    await reset_state(message, state)
+    user_id = message.from_user.id
+    if not await check_maintenance(message):
+        return
+    
+    # Базові кнопки для всіх користувачів
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("Старт", callback_data="cmd_start")],
+        [InlineKeyboardButton("Створити акаунт", callback_data="cmd_create_account")],
+        [InlineKeyboardButton("Видалити акаунт", callback_data="cmd_delete_account")],
+        [InlineKeyboardButton("Почати матч", callback_data="cmd_start_match")]
+    ])
+    
+    # Додаткові кнопки для адмінів
+    if user_id in ADMIN_IDS:
+        keyboard.inline_keyboard.extend([
+            [InlineKeyboardButton("Адмін-панель", callback_data="cmd_admin_setting")],
+            [InlineKeyboardButton("Технічні роботи (увімкнути)", callback_data="cmd_maintenance_on")],
+            [InlineKeyboardButton("Технічні роботи (вимкнути)", callback_data="cmd_maintenance_off")]
+        ])
+    
+    await message.reply("Обери команду:", reply_markup=keyboard)
+    logger.debug(f"Sent menu to user {user_id}")
+
+# Обробка вибору команд із меню
+@dp.callback_query(lambda c: c.data.startswith("cmd_"))
+async def handle_menu_selection(callback: types.CallbackQuery, state: FSMContext):
+    logger.debug(f"Received menu selection from user {callback.from_user.id}: {callback.data}")
+    user_id = callback.from_user.id
+    command = callback.data[4:]  # Видаляємо "cmd_" з callback_data
+    
+    commands = {
+        "start": start,
+        "create_account": create_account,
+        "delete_account": delete_account,
+        "start_match": start_match,
+        "admin_setting": admin_setting,
+        "maintenance_on": maintenance_on,
+        "maintenance_off": maintenance_off
+    }
+    
+    if command in commands:
+        await commands[command](callback.message, state)
+    else:
+        await callback.message.reply("Невідома команда!")
+        logger.debug(f"Unknown command {command} from user {user_id}")
+    
+    await callback.answer()
 
 # Команда /create_account
 @dp.message(Command("create_account"))
@@ -304,6 +360,8 @@ async def start_match(message: types.Message, state: FSMContext):
     if not await check_maintenance(message):
         return
     user_id = message.from_user.id
+    
+    # Перевірка акаунта
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
@@ -314,6 +372,7 @@ async def start_match(message: types.Message, state: FSMContext):
         conn.close()
         return
     
+    # Перевірка активного матчу
     c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
     if c.fetchone():
         await message.reply("Ти вже в матчі! Закінчи поточний бій.")
@@ -321,49 +380,84 @@ async def start_match(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id != ? AND user_id NOT IN (SELECT player1_id FROM matches WHERE status = 'active') AND user_id NOT IN (SELECT player2_id FROM matches WHERE status = 'active')", (user_id,))
-    opponents = c.fetchall()
-    if not opponents:
-        await message.reply("Немає доступних суперників. Спробуй пізніше.")
-        logger.debug(f"No opponents available for user {user_id}")
+    # Перевірка, чи користувач уже шукає матч
+    if user_id in searching_users:
+        await message.reply("Ти вже шукаєш суперника! Зачекай.")
+        logger.debug(f"User {user_id} already in searching_users")
         conn.close()
         return
     
-    opponent = random.choice(opponents)
-    opponent_id, opponent_name, opponent_type = opponent
+    # Додавання користувача до пошуку
+    searching_users.append(user_id)
+    logger.debug(f"User {user_id} added to searching_users: {searching_users}")
     
-    c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
-    player_stats = c.fetchone()
-    c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
-    opponent_stats = c.fetchone()
+    # Пошук суперника
+    await message.reply("Пошук суперника... (макс. 60 секунд)")
     
-    if not player_stats or not opponent_stats:
-        await message.reply("Помилка: не вдалося знайти статистику бійця. Спробуй видалити акаунт і створити новий.")
-        logger.error(f"Missing stats for user {user_id} or opponent {opponent_id}")
-        conn.close()
-        return
+    start_time = time.time()
+    while time.time() - start_time < 60:
+        # Знайти іншого користувача, який шукає
+        for opponent_id in searching_users:
+            if opponent_id != user_id:
+                # Знайдено суперника
+                searching_users.remove(user_id)
+                searching_users.remove(opponent_id)
+                logger.debug(f"Match found: {user_id} vs {opponent_id}")
+                
+                # Отримати дані суперника
+                c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (opponent_id,))
+                opponent = c.fetchone()
+                if not opponent:
+                    await message.reply("Помилка: суперник не знайдений. Спробуй ще раз.")
+                    logger.error(f"Opponent {opponent_id} not found in users")
+                    conn.close()
+                    return
+                
+                # Перевірка статистики
+                c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
+                player_stats = c.fetchone()
+                c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
+                opponent_stats = c.fetchone()
+                
+                if not player_stats or not opponent_stats:
+                    await message.reply("Помилка: не вдалося знайти статистику бійця. Спробуй видалити акаунт і створити новий.")
+                    logger.error(f"Missing stats for user {user_id} or opponent {opponent_id}")
+                    conn.close()
+                    return
+                
+                # Створити матч
+                action_deadline = time.time() + 15
+                c.execute(
+                    """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
+                    VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+                    (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
+                )
+                conn.commit()
+                match_id = c.lastrowid
+                conn.close()
+                
+                # Відправити повідомлення
+                keyboard = get_fight_keyboard(match_id)
+                await message.reply(
+                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
+                    reply_markup=keyboard
+                )
+                await bot.send_message(
+                    chat_id=opponent_id,
+                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
+                    reply_markup=keyboard
+                )
+                logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
+                return
+        
+        # Чекати 1 секунду перед наступною перевіркою
+        await asyncio.sleep(1)
     
-    action_deadline = time.time() + 15
-    c.execute(
-        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
-        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
-        (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
-    )
-    conn.commit()
-    match_id = c.lastrowid
+    # Таймаут пошуку
+    searching_users.remove(user_id)
+    await message.reply("Суперник не знайдений. Спробуй ще раз.")
+    logger.debug(f"Search timeout for user {user_id}")
     conn.close()
-    
-    keyboard = get_fight_keyboard(match_id)
-    await message.reply(
-        f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent_name} ({opponent_type.capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
-        reply_markup=keyboard
-    )
-    await bot.send_message(
-        chat_id=opponent_id,
-        text=f"Матч розпочато! Ти ({opponent_name}, {opponent_type.capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (15 секунд):",
-        reply_markup=keyboard
-    )
-    logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
 
 # Клавіатура для бою
 def get_fight_keyboard(match_id):

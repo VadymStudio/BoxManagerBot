@@ -44,7 +44,7 @@ app = Flask(__name__)
 # Ініціалізація бота
 bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(bot=bot, storage=storage)
+dp = Dispatcher(storage=storage)  # Без bot у конструкторі
 
 # Визначення станів
 class CharacterCreation(StatesGroup):
@@ -563,13 +563,5 @@ async def main():
         logger.error(f"Polling failed: {e}")
         raise
 
-# Запуск Flask у окремому потоці
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
 if __name__ == "__main__":
-    import threading
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
     asyncio.run(main())

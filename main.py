@@ -561,7 +561,8 @@ def webhook():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(dp.process_update(update))
+            loop.run_until_complete(dp.feed_update(bot, update))
+            logger.debug("Update processed successfully")
         finally:
             loop.close()
         return jsonify({"ok": True})

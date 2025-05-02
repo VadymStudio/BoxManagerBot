@@ -4,9 +4,10 @@ import random
 import sqlite3
 import time
 import asyncio
+import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.filters import Command, RegexpCommandsFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -101,10 +102,18 @@ async def check_maintenance(message: types.Message):
         return False
     return True
 
+# Скидання стану для всіх команд
+async def reset_state(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        logger.debug(f"Resetting state for user {message.from_user.id} from {current_state}")
+        await state.clear()
+
 # Команда /start
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
     logger.debug(f"Received /start from user {message.from_user.id}")
+    await reset_state(message, state)
     user_id = message.from_user.id
     if not await check_maintenance(message):
         return
@@ -117,6 +126,7 @@ async def start(message: types.Message):
 @dp.message(Command("create_account"))
 async def create_account(message: types.Message, state: FSMContext):
     logger.debug(f"Received /create_account from user {message.from_user.id}")
+    await reset_state(message, state)
     if not await check_maintenance(message):
         return
     user_id = message.from_user.id
@@ -129,7 +139,7 @@ async def create_account(message: types.Message, state: FSMContext):
         conn.close()
         return
     conn.close()
-    await message.reply("Введи ім'я персонажа (нік у грі):")
+    await message.reply("Введи ім'я персонажа (нік у грі, тільки літери, цифри, до 20 символів):")
     await state.set_state(CharacterCreation.awaiting_character_name)
     logger.debug(f"Prompted user {user_id} for character name")
 
@@ -141,6 +151,19 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         return
     user_id = message.from_user.id
     character_name = message.text.strip()
+
+    # Перевірка, чи введено команду
+    if character_name.startswith('/'):
+        await message.reply("Будь ласка, введи нік, а не команду. Спробуй ще раз.")
+        logger.debug(f"User {user_id} entered command {character_name} instead of nickname")
+        return
+
+    # Валідація ніку
+    if not re.match(r'^[a-zA-Z0-9_]{1,20}$', character_name):
+        await message.reply("Нік може містити тільки літери, цифри, символ '_', до 20 символів. Спробуй ще раз.")
+        logger.debug(f"Invalid character name {character_name} from user {user_id}")
+        return
+
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT character_name FROM users WHERE character_name = ?", (character_name,))
@@ -170,9 +193,12 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         await message.reply(fighter_descriptions, reply_markup=keyboard, parse_mode="Markdown")
         await state.set_state(CharacterCreation.awaiting_fighter_type)
         logger.debug(f"Sent fighter type selection to user {user_id}")
-    except sqlite3.IntegrityError:
-        await message.reply("Цей нік уже зайнятий. Вибери інший.")
-        logger.debug(f"Integrity error for character name {character_name}")
+    except sqlite3.IntegrityError as e:
+        await message.reply("Помилка: цей нік уже зайнятий або сталася помилка. Спробуй інший.")
+        logger.error(f"Integrity error for character name {character_name}: {e}")
+    except Exception as e:
+        await message.reply("Сталася помилка при створенні акаунта. Спробуй ще раз.")
+        logger.error(f"Error creating account for user {user_id}: {e}")
     finally:
         conn.close()
 
@@ -234,9 +260,13 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.reply(f"Акаунт створено! Персонаж: {character_name}, Тип: {fighter_type.capitalize()}")
         await callback.answer()
         logger.debug(f"Created account for user {user_id}: {character_name}, {fighter_type}")
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as e:
         await callback.message.reply("Помилка при збереженні бійця. Спробуй ще раз.")
-        logger.debug(f"Integrity error for fighter type {fighter_type} for user {user_id}")
+        logger.error(f"Integrity error for fighter type {fighter_type} for user {user_id}: {e}")
+        await callback.answer()
+    except Exception as e:
+        await callback.message.reply("Сталася помилка при створенні бійця. Спробуй ще раз.")
+        logger.error(f"Error saving fighter type for user {user_id}: {e}")
         await callback.answer()
     finally:
         conn.close()
@@ -244,8 +274,9 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
 
 # Команда /delete_account
 @dp.message(Command("delete_account"))
-async def delete_account(message: types.Message):
+async def delete_account(message: types.Message, state: FSMContext):
     logger.debug(f"Received /delete_account from user {message.from_user.id}")
+    await reset_state(message, state)
     if not await check_maintenance(message):
         return
     user_id = message.from_user.id
@@ -267,8 +298,9 @@ async def delete_account(message: types.Message):
 
 # Команда /start_match
 @dp.message(Command("start_match"))
-async def start_match(message: types.Message):
+async def start_match(message: types.Message, state: FSMContext):
     logger.debug(f"Received /start_match from user {message.from_user.id}")
+    await reset_state(message, state)
     if not await check_maintenance(message):
         return
     user_id = message.from_user.id
@@ -304,6 +336,12 @@ async def start_match(message: types.Message):
     player_stats = c.fetchone()
     c.execute("SELECT health, total_stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
     opponent_stats = c.fetchone()
+    
+    if not player_stats or not opponent_stats:
+        await message.reply("Помилка: не вдалося знайти статистику бійця. Спробуй видалити акаунт і створити новий.")
+        logger.error(f"Missing stats for user {user_id} or opponent {opponent_id}")
+        conn.close()
+        return
     
     action_deadline = time.time() + 15
     c.execute(
@@ -520,7 +558,7 @@ async def end_match(match_id, player1_id, player2_id, p1_health, p2_health):
     else:
         result = "Матч завершено за часом. Переможець визначається за здоров’ям:\n"
         result += f"Гравець 1: HP {p1_health:.1f}\nГравець 2: HP {p2_health:.1f}\n"
-        result += "Гравець 1 переміг!" if p1_health > p2_health else "Гравець 2 переміг!" if p2_health > p1_health else "Нічия!"
+        result += "Гравець 1 переміг!" if p1_health > p2_health else "Гравець 2 переміг!" if p2_health > p2_health else "Нічия!"
     
     await bot.send_message(chat_id=player1_id, text=result)
     await bot.send_message(chat_id=player2_id, text=result)
@@ -528,9 +566,10 @@ async def end_match(match_id, player1_id, player2_id, p1_health, p2_health):
 
 # Адмінська команда /admin_setting
 @dp.message(Command("admin_setting"))
-async def admin_setting(message: types.Message):
+async def admin_setting(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     logger.debug(f"Received /admin_setting from user {user_id}")
+    await reset_state(message, state)
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
         logger.debug(f"Access denied for /admin_setting for user {user_id}")
@@ -544,9 +583,10 @@ async def admin_setting(message: types.Message):
 
 # Увімкнення технічних робіт
 @dp.message(Command("maintenance_on"))
-async def maintenance_on(message: types.Message):
+async def maintenance_on(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     logger.debug(f"Received /maintenance_on from user {user_id}")
+    await reset_state(message, state)
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
         logger.debug(f"Access denied for /maintenance_on for user {user_id}")
@@ -558,9 +598,10 @@ async def maintenance_on(message: types.Message):
 
 # Вимкнення технічних робіт
 @dp.message(Command("maintenance_off"))
-async def maintenance_off(message: types.Message):
+async def maintenance_off(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     logger.debug(f"Received /maintenance_off from user {user_id}")
+    await reset_state(message, state)
     if user_id not in ADMIN_IDS:
         await message.reply("Доступ заборонено!")
         logger.debug(f"Access denied for /maintenance_off for user {user_id}")

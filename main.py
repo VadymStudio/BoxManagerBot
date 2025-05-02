@@ -36,10 +36,8 @@ if not TELEGRAM_TOKEN:
 ADMIN_IDS = [id for id in [Vadym_ID, Nazar_ID] if id != 0]
 logger.info(f"ADMIN_IDS: {ADMIN_IDS}")
 
-# Налаштування HTTPX із більшим пулом з’єднань
-telegram_request = HTTPXRequest(
-    connection_pool_size=100
-)
+# Налаштування HTTPX
+telegram_request = HTTPXRequest(connection_pool_size=100)
 
 # Ініціалізація Flask
 app = Flask(__name__)
@@ -47,6 +45,17 @@ app = Flask(__name__)
 # Ініціалізація Telegram Bot і Application
 bot = Bot(token=TELEGRAM_TOKEN, request=telegram_request)
 app_telegram = Application.builder().token(TELEGRAM_TOKEN).request(telegram_request).build()
+
+# Перевірка зв’язку з Telegram API
+async def check_telegram_api():
+    try:
+        logger.debug("Checking Telegram API connection...")
+        bot_info = await bot.get_me()
+        logger.info(f"Bot info: {bot_info}")
+        updates = await bot.get_updates(timeout=5)
+        logger.debug(f"Initial updates: {updates}")
+    except Exception as e:
+        logger.error(f"Telegram API check failed: {e}")
 
 # Ініціалізація бази даних SQLite
 def init_db():
@@ -419,7 +428,7 @@ async def process_round(match_id, context, timed_out=False):
     p2_stats = c.fetchone()
     p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat = p2_stats
     
-    result_text = f"Раунд {round_num}\ Wn"
+    result_text = f"Раунд {round_num}\n"
     
     # Якщо тайм-аут, дії = "rest"
     if timed_out:
@@ -580,23 +589,6 @@ app_telegram.add_handler(CommandHandler("admin_setting", admin_setting))
 app_telegram.add_handler(CommandHandler("maintenance_on", maintenance_on))
 app_telegram.add_handler(CommandHandler("maintenance_off", maintenance_off))
 
-# Вебхук для Flask (для дебагу або майбутнього використання)
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json()
-        logger.debug(f"Webhook received data: {data}")
-        update = Update.de_json(data, bot)
-        if update:
-            app_telegram.process_update(update)
-            logger.debug("Webhook processed update successfully")
-        else:
-            logger.warning("Webhook received no valid update")
-        return jsonify({"ok": True})
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return jsonify({"ok": False}), 500
-
 # Health check для UptimeRobot
 @app.route("/health", methods=["GET"])
 def health():
@@ -605,7 +597,7 @@ def health():
 # Синхронне відключення вебхука
 def disable_webhook_sync():
     try:
-        response = httpx.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook")
+        response = httpx.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true")
         result = response.json()
         if result.get("ok"):
             logger.info("Webhook disabled successfully")
@@ -619,8 +611,10 @@ if __name__ == "__main__":
     logger.info("Starting bot...")
     disable_webhook_sync()  # Відключаємо вебхук
     try:
+        logger.info("Checking Telegram API...")
+        asyncio.run(check_telegram_api())
         logger.info("Initializing bot and starting polling...")
-        app_telegram.run_polling(poll_interval=0.5, timeout=10, drop_pending_updates=True)
+        app_telegram.run_polling(poll_interval=0.2, timeout=10, drop_pending_updates=True)
         logger.info("Polling started successfully")
     except Exception as e:
         logger.error(f"Polling failed: {e}")

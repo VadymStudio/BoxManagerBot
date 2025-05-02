@@ -557,7 +557,7 @@ async def main():
         logger.info("Webhook disabled successfully")
         bot_info = await bot.get_me()
         logger.info(f"Bot info: {bot_info}")
-        await dp.start_polling(timeout=10, relax=0.2, drop_pending_updates=True)
+        await dp.start_polling(bot=bot, timeout=10, relax=0.2, drop_pending_updates=True)
         logger.info("Polling started successfully")
     except Exception as e:
         logger.error(f"Polling failed: {e}")

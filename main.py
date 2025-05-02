@@ -547,15 +547,23 @@ async def maintenance_off(message: types.Message):
 # Health check для UptimeRobot
 @app.route("/health", methods=["GET"])
 def health():
+    logger.debug("Received /health request")
     return jsonify({"status": "ok"})
 
 # Webhook endpoint
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    logger.debug("Received webhook request")
     try:
         data = request.get_json()
+        logger.debug(f"Webhook data: {data}")
         update = types.Update(**data)
-        asyncio.run_coroutine_threadsafe(dp.process_update(update), asyncio.get_event_loop())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(dp.process_update(update))
+        finally:
+            loop.close()
         return jsonify({"ok": True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")

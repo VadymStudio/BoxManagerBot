@@ -7,7 +7,7 @@ import asyncio
 import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, RegexpCommandsFilter
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -558,7 +558,7 @@ async def end_match(match_id, player1_id, player2_id, p1_health, p2_health):
     else:
         result = "Матч завершено за часом. Переможець визначається за здоров’ям:\n"
         result += f"Гравець 1: HP {p1_health:.1f}\nГравець 2: HP {p2_health:.1f}\n"
-        result += "Гравець 1 переміг!" if p1_health > p2_health else "Гравець 2 переміг!" if p2_health > p2_health else "Нічия!"
+        result += "Гравець 1 переміг!" if p1_health > p2_health else "Гравець 2 переміг!" if p2_health > p1_health else "Нічия!"
     
     await bot.send_message(chat_id=player1_id, text=result)
     await bot.send_message(chat_id=player2_id, text=result)

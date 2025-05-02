@@ -1,3 +1,4 @@
+```python
 import logging
 import os
 import random
@@ -5,6 +6,7 @@ import sqlite3
 import time
 import asyncio
 import re
+import string
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -54,6 +56,9 @@ class CharacterCreation(StatesGroup):
     awaiting_character_name = State()
     awaiting_fighter_type = State()
 
+class RoomCreation(StatesGroup):
+    awaiting_room_token = State()
+
 # Ініціалізація бази даних SQLite
 def init_db():
     conn = sqlite3.connect("bot.db")
@@ -99,9 +104,16 @@ def init_db():
         FOREIGN KEY (match_id) REFERENCES matches (match_id),
         FOREIGN KEY (player_id) REFERENCES users (user_id)
     )""")
-    # Очищення активних матчів і нокдаунів при запуску
+    c.execute("""CREATE TABLE IF NOT EXISTS rooms (
+        token TEXT PRIMARY KEY,
+        creator_id INTEGER,
+        created_at REAL,
+        FOREIGN KEY (creator_id) REFERENCES users (user_id)
+    )""")
+    # Очищення активних матчів, нокдаунів і старих кімнат
     c.execute("DELETE FROM matches WHERE status = 'active'")
     c.execute("DELETE FROM knockdowns")
+    c.execute("DELETE FROM rooms WHERE created_at < ?", (time.time() - 300,))  # Видалити кімнати старше 5 хвилин
     conn.commit()
     conn.close()
 
@@ -124,6 +136,11 @@ async def reset_state(message: types.Message, state: FSMContext):
         logger.debug(f"Resetting state for user {message.from_user.id} from {current_state}")
         await state.clear()
 
+# Генерація токена для кімнати
+def generate_room_token():
+    characters = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(characters) for _ in range(6))
+
 # Налаштування меню команд
 async def setup_bot_commands():
     user_commands = [
@@ -131,6 +148,8 @@ async def setup_bot_commands():
         BotCommand(command="/create_account", description="Створити акаунт"),
         BotCommand(command="/delete_account", description="Видалити акаунт"),
         BotCommand(command="/start_match", description="Почати матч"),
+        BotCommand(command="/create_room", description="Створити кімнату"),
+        BotCommand(command="/join_room", description="Приєднатися до кімнати"),
         BotCommand(command="/refresh_commands", description="Оновити меню команд")
     ]
     
@@ -141,7 +160,6 @@ async def setup_bot_commands():
     ]
     
     try:
-        # Очищення старих команд
         await bot.delete_my_commands(scope=BotCommandScopeDefault())
         logger.info("Cleared default commands")
         await bot.set_my_commands(commands=user_commands, scope=BotCommandScopeDefault())
@@ -349,10 +367,159 @@ async def delete_account(message: types.Message, state: FSMContext):
     c.execute("DELETE FROM fighter_stats WHERE user_id = ?", (user_id,))
     c.execute("DELETE FROM matches WHERE player1_id = ? OR player2_id = ?", (user_id, user_id))
     c.execute("DELETE FROM knockdowns WHERE player_id = ?", (user_id,))
+    c.execute("DELETE FROM rooms WHERE creator_id = ?", (user_id,))
     conn.commit()
     conn.close()
     await message.reply("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
     logger.debug(f"Deleted account for user {user_id}")
+
+# Команда /create_room
+@dp.message(Command("create_room"))
+async def create_room(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /create_room from user {message.from_user.id}")
+    await reset_state(message, state)
+    if not await check_maintenance(message):
+        return
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, character_name FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        await message.reply("Спочатку створи акаунт за допомогою /create_account!")
+        logger.debug(f"No account for user {user_id} for /create_room")
+        conn.close()
+        return
+    
+    c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
+    if c.fetchone():
+        await message.reply("Ти вже в матчі! Закінчи поточний бій.")
+        logger.debug(f"User {user_id} already in active match")
+        conn.close()
+        return
+    
+    c.execute("SELECT token FROM rooms WHERE creator_id = ?", (user_id,))
+    if c.fetchone():
+        await message.reply("Ти вже створив кімнату! Видали акаунт або зачекай 5 хвилин.")
+        logger.debug(f"User {user_id} already has a room")
+        conn.close()
+        return
+    
+    token = generate_room_token()
+    try:
+        c.execute(
+            "INSERT INTO rooms (token, creator_id, created_at) VALUES (?, ?, ?)",
+            (token, user_id, time.time())
+        )
+        conn.commit()
+        await message.reply(f"Кімната створена! Токен: {token}. Поділись ним із суперником.")
+        logger.debug(f"Created room with token {token} for user {user_id}")
+    except sqlite3.IntegrityError:
+        await message.reply("Помилка: токен уже існує. Спробуй ще раз.")
+        logger.error(f"Token {token} already exists")
+    finally:
+        conn.close()
+
+# Команда /join_room
+@dp.message(Command("join_room"))
+async def join_room(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /join_room from user {message.from_user.id}")
+    await reset_state(message, state)
+    if not await check_maintenance(message):
+        return
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        await message.reply("Спочатку створи акаунт за допомогою /create_account!")
+        logger.debug(f"No account for user {user_id} for /join_room")
+        conn.close()
+        return
+    
+    c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
+    if c.fetchone():
+        await message.reply("Ти вже в матчі! Закінчи поточний бій.")
+        logger.debug(f"User {user_id} already in active match")
+        conn.close()
+        return
+    
+    args = message.text.split()
+    if len(args) != 2:
+        await message.reply("Вкажи токен кімнати: /join_room <token>")
+        logger.debug(f"Invalid /join_room command from user {user_id}")
+        conn.close()
+        return
+    
+    token = args[1].strip()
+    c.execute("SELECT creator_id, created_at FROM rooms WHERE token = ?", (token,))
+    room = c.fetchone()
+    if not room:
+        await message.reply("Кімната не знайдена або прострочена!")
+        logger.debug(f"Room with token {token} not found")
+        conn.close()
+        return
+    
+    creator_id, created_at = room
+    if creator_id == user_id:
+        await message.reply("Ти не можеш приєднатися до власної кімнати!")
+        logger.debug(f"User {user_id} tried to join own room {token}")
+        conn.close()
+        return
+    
+    if time.time() - created_at > 300:
+        c.execute("DELETE FROM rooms WHERE token = ?", (token,))
+        conn.commit()
+        await message.reply("Кімната прострочена!")
+        logger.debug(f"Room {token} expired")
+        conn.close()
+        return
+    
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (creator_id,))
+    opponent = c.fetchone()
+    if not opponent:
+        await message.reply("Помилка: творець кімнати не знайдений.")
+        logger.error(f"Creator {creator_id} not found in users")
+        conn.close()
+        return
+    
+    c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
+    player_stats = c.fetchone()
+    c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (creator_id,))
+    opponent_stats = c.fetchone()
+    
+    if not player_stats or not opponent_stats:
+        await message.reply("Помилка: не вдалося знайти статистику бійця. Спробуй видалити акаунт і створити новий.")
+        logger.error(f"Missing stats for user {user_id} or opponent {creator_id}")
+        conn.close()
+        return
+    
+    action_deadline = time.time() + 30
+    c.execute(
+        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
+        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+        (user_id, creator_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
+    )
+    conn.commit()
+    match_id = c.lastrowid
+    c.execute("DELETE FROM rooms WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+    
+    keyboard = get_fight_keyboard(match_id)
+    await message.reply(
+        f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
+        reply_markup=keyboard
+    )
+    await bot.send_message(
+        chat_id=creator_id,
+        text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
+        reply_markup=keyboard
+    )
+    logger.debug(f"Started match {match_id} for user {user_id} vs {creator_id}")
 
 # Команда /start_match
 @dp.message(Command("start_match"))
@@ -388,12 +555,11 @@ async def start_match(message: types.Message, state: FSMContext):
     
     searching_users.append(user_id)
     logger.debug(f"User {user_id} added to searching_users: {searching_users}")
-    matchmaking_event.set()  # Сповіщення про нового гравця
+    matchmaking_event.set()
     
     await message.reply("Пошук суперника... (макс. 30 секунд)")
     
     try:
-        # Очікування другого гравця або таймаут
         await asyncio.wait_for(matchmaking_event.wait(), timeout=30)
         for opponent_id in searching_users:
             if opponent_id != user_id:
@@ -422,7 +588,7 @@ async def start_match(message: types.Message, state: FSMContext):
                     conn.close()
                     return
                 
-                action_deadline = time.time() + 30  # Збільшено до 30 секунд
+                action_deadline = time.time() + 30
                 c.execute(
                     """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
                     VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
@@ -445,7 +611,6 @@ async def start_match(message: types.Message, state: FSMContext):
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
                 return
         
-        # Якщо суперник не знайдений
         if user_id in searching_users:
             searching_users.remove(user_id)
         await message.reply("Суперник не знайдений. Спробуй ще раз.")
@@ -525,83 +690,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
     await callback.answer()
     logger.debug(f"Processed fight action {action} for match {match_id} by user {user_id}")
 
-# Клавіатура для нокдауну
-def get_knockdown_keyboard(match_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Встати", callback_data=f"knockdown_{match_id}_stand")]
-    ])
-
-# Обробка дії "Встати"
-@dp.callback_query(lambda c: c.data.startswith("knockdown_"))
-async def handle_knockdown_stand(callback: types.CallbackQuery):
-    logger.debug(f"Received knockdown action from user {callback.from_user.id}: {callback.data}")
-    user_id = callback.from_user.id
-    match_id = int(callback.data.split("_")[1])
-    
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("SELECT player_id, deadline FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, user_id))
-    knockdown = c.fetchone()
-    if not knockdown:
-        await callback.message.reply("Нокдаун завершено або не існує.")
-        logger.debug(f"No knockdown for user {user_id} in match {match_id}")
-        conn.close()
-        await callback.answer()
-        return
-    
-    if time.time() > knockdown[1]:
-        await callback.message.reply("Час для вставання минув!")
-        await end_match(match_id, user_id, None, 0, 100)  # Суперник перемагає
-        logger.debug(f"Knockdown timeout for user {user_id} in match {match_id}")
-        conn.close()
-        await callback.answer()
-        return
-    
-    c.execute("SELECT player1_id, player2_id, player1_health, player2_health, player1_stamina, player2_stamina FROM matches WHERE match_id = ?", (match_id,))
-    match = c.fetchone()
-    player1_id, player2_id, p1_health, p2_health, p1_stamina, p2_stamina = match
-    
-    c.execute("SELECT health FROM fighter_stats WHERE user_id = ?", (user_id,))
-    max_health = c.fetchone()[0]
-    
-    if user_id == player1_id:
-        p1_health = max(0, p1_health) + 0.2 * max_health
-        p1_stamina = min(p1_stamina + 40, 100)
-        c.execute(
-            "UPDATE matches SET player1_health = ?, player1_stamina = ? WHERE match_id = ?",
-            (p1_health, p1_stamina, match_id)
-        )
-    else:
-        p2_health = max(0, p2_health) + 0.2 * max_health
-        p2_stamina = min(p2_stamina + 40, 100)
-        c.execute(
-            "UPDATE matches SET player2_health = ?, player2_stamina = ? WHERE match_id = ?",
-            (p2_health, p2_stamina, match_id)
-        )
-    
-    c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, user_id))
-    conn.commit()
-    
-    opponent_id = player2_id if user_id == player1_id else player1_id
-    c.execute("SELECT character_name FROM users WHERE user_id = ?", (user_id,))
-    player_name = c.fetchone()[0]
-    c.execute("SELECT character_name FROM users WHERE user_id = ?", (opponent_id,))
-    opponent_name = c.fetchone()[0]
-    
-    await callback.message.reply(
-        f"{player_name} встав після нокдауну! Здоров’я: {p1_health if user_id == player1_id else p2_health:.1f}, Енергія: {p1_stamina if user_id == player1_id else p2_stamina:.1f}"
-    )
-    await bot.send_message(
-        opponent_id,
-        f"{player_name} встав після нокдауну! Продовжуємо бій!"
-    )
-    await send_fight_message(match_id)
-    
-    conn.close()
-    await callback.answer()
-    logger.debug(f"User {user_id} stood up in match {match_id}")
-
-# Надсилання повідомлення про бій після нокдауну
+# Надсилання повідомлення про бій
 async def send_fight_message(match_id):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -620,13 +709,13 @@ async def send_fight_message(match_id):
     p1_name, p1_type = c.fetchone()
     c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player2_id,))
     p2_name, p2_type = c.fetchone()
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health FROM fighter_stats WHERE user_id = ?", (player1_id,))
-    p1_stats = c.fetchone()
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health FROM fighter_stats WHERE user_id = ?", (player2_id,))
-    p2_stats = c.fetchone()
+    c.execute("SELECT health FROM fighter_stats WHERE user_id = ?", (player1_id,))
+    p1_max_health = c.fetchone()[0]
+    c.execute("SELECT health FROM fighter_stats WHERE user_id = ?", (player2_id,))
+    p2_max_health = c.fetchone()[0]
     
-    p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_stats)
-    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_stats)
+    p1_status_text = f"{p1_name} ({p1_type.capitalize()}):\nЗдоров’я: {p1_health:.1f}/{p1_max_health:.1f}, Енергія: {p1_stamina:.1f}/100"
+    p2_status_text = f"{p2_name} ({p2_type.capitalize()}):\nЗдоров’я: {p2_health:.1f}/{p2_max_health:.1f}, Енергія: {p2_stamina:.1f}/100"
     
     keyboard = get_fight_keyboard(match_id)
     action_deadline = time.time() + 30
@@ -647,19 +736,72 @@ async def send_fight_message(match_id):
     conn.close()
 
 # Формування тексту стану гравця
-def get_status_text(name, fighter_type, health, stamina, stats):
-    strength, reaction, punch_speed, stamina_stat, max_health = stats
-    hit_modifier = reaction * punch_speed / 2
-    return (
-        f"{name} ({fighter_type.capitalize()}):\n"
-        f"Здоров’я: {health:.1f}/{max_health:.1f}, Енергія: {stamina:.1f}/100\n"
-        f"📊 Прямий удар: -6 енергії, урон {7 * strength:.1f}, шанс {min(100, 90 * hit_modifier):.1f}%\n"
-        f"📊 Апперкот: -19 енергії, урон {25 * strength:.1f}, шанс {min(100, 60 * hit_modifier):.1f}%\n"
-        f"📊 Хук: -15 енергії, урон {19 * strength:.1f}, шанс {min(100, 75 * hit_modifier):.1f}%\n"
-        f"📊 Ухилення: -6 енергії, шанс {min(100, 40 * reaction * punch_speed):.1f}%\n"
-        f"📊 Блок: -5 енергії, зменшення урону на {0.5 * stamina_stat * strength:.1f}\n"
-        f"📊 Відпочинок: +30 енергії"
+def get_status_text(name, fighter_type, health, stamina, max_health):
+    return f"{name} ({fighter_type.capitalize()}):\nЗдоров’я: {health:.1f}/{max_health:.1f}, Енергія: {stamina:.1f}/100"
+
+# Обробка нокдауну
+async def handle_knockdown(match_id, player_id, opponent_id, player_name, opponent_name):
+    logger.debug(f"Player {player_name} in knockdown for match {match_id}")
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    
+    c.execute("SELECT will FROM fighter_stats WHERE user_id = ?", (player_id,))
+    will = c.fetchone()[0]
+    c.execute("SELECT health FROM fighter_stats WHERE user_id = ?", (player_id,))
+    max_health = c.fetchone()[0]
+    c.execute("SELECT player1_id, player1_health, player1_stamina, player2_id, player2_health, player2_stamina FROM matches WHERE match_id = ?", (match_id,))
+    match = c.fetchone()
+    p1_id, p1_health, p1_stamina, p2_id, p2_health, p2_stamina = match
+    
+    deadline = time.time() + 10
+    c.execute(
+        "INSERT INTO knockdowns (match_id, player_id, deadline) VALUES (?, ?, ?)",
+        (match_id, player_id, deadline)
     )
+    conn.commit()
+    
+    await bot.send_message(player_id, f"Ти впав! У тебе 10 секунд, щоб встати.")
+    await bot.send_message(opponent_id, f"{player_name} впав! Чи встане він?")
+    
+    stand_chance = min(0.8, 0.2 + (will * 0.4))
+    start_time = time.time()
+    
+    while time.time() < deadline:
+        if random.random() < stand_chance:
+            if player_id == p1_id:
+                p1_health = 0.2 * max_health
+                p1_stamina = min(p1_stamina + 40, 100)
+                c.execute(
+                    "UPDATE matches SET player1_health = ?, player1_stamina = ? WHERE match_id = ?",
+                    (p1_health, p1_stamina, match_id)
+                )
+            else:
+                p2_health = 0.2 * max_health
+                p2_stamina = min(p2_stamina + 40, 100)
+                c.execute(
+                    "UPDATE matches SET player2_health = ?, player2_stamina = ? WHERE match_id = ?",
+                    (p2_health, p2_stamina, match_id)
+                )
+            c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, player_id))
+            conn.commit()
+            await bot.send_message(
+                player_id,
+                f"Ти встав після нокдауну! Здоров’я: {p1_health if player_id == p1_id else p2_health:.1f}, Енергія: {p1_stamina if player_id == p1_id else p2_stamina:.1f}"
+            )
+            await bot.send_message(
+                opponent_id,
+                f"{player_name} встав після нокдауну! Продовжуємо бій!"
+            )
+            conn.close()
+            await send_fight_message(match_id)
+            return
+        
+        await asyncio.sleep(1)
+    
+    c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, player_id))
+    conn.commit()
+    conn.close()
+    await end_match(match_id, player_id, opponent_id, p1_health, p2_health)
 
 # Обробка раунду
 async def process_round(match_id, timed_out=False):
@@ -673,23 +815,23 @@ async def process_round(match_id, timed_out=False):
     match = c.fetchone()
     player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num, start_time = match
     
-    c.execute("SELECT character_name FROM users WHERE user_id = ?", (player1_id,))
-    p1_name = c.fetchone()[0]
-    c.execute("SELECT character_name FROM users WHERE user_id = ?", (player2_id,))
-    p2_name = c.fetchone()[0]
+    c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player1_id,))
+    p1_name, p1_type = c.fetchone()
+    c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player2_id,))
+    p2_name, p2_type = c.fetchone()
+    
+    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will FROM fighter_stats WHERE user_id = ?", (player1_id,))
+    p1_stats = c.fetchone()
+    p1_strength, p1_reaction, p1_punch_speed, p1_stamina_stat, p1_max_health, p1_will = p1_stats
+    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will FROM fighter_stats WHERE user_id = ?", (player2_id,))
+    p2_stats = c.fetchone()
+    p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat, p2_max_health, p2_will = p2_stats
     
     if time.time() > start_time + 180:
         await end_match(match_id, player1_id, player2_id, p1_health, p2_health)
         logger.debug(f"Match {match_id} ended due to time limit")
         conn.close()
         return
-    
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health FROM fighter_stats WHERE user_id = ?", (player1_id,))
-    p1_stats = c.fetchone()
-    p1_strength, p1_reaction, p1_punch_speed, p1_stamina_stat, p1_max_health = p1_stats
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health FROM fighter_stats WHERE user_id = ?", (player2_id,))
-    p2_stats = c.fetchone()
-    p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat, p2_max_health = p2_stats
     
     result_text = f"Раунд {round_num}\n"
     
@@ -704,6 +846,9 @@ async def process_round(match_id, timed_out=False):
         "hook": {"base_damage": 19, "stamina_cost": 15, "base_hit_chance": 0.75}
     }
     
+    p1_action_result = ""
+    p2_action_result = ""
+    
     # Обробка дії Гравця 1
     if p1_action in attack_params:
         params = attack_params[p1_action]
@@ -713,30 +858,46 @@ async def process_round(match_id, timed_out=False):
             damage = params["base_damage"] * p1_strength
             p2_health -= damage
             result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Урон: {damage:.1f}\n"
+            p1_action_result = "Ти влучив!"
         elif p2_action == "block":
             block_strength = 0.5 * p2_stamina_stat * p2_strength
             damage = max(0, params["base_damage"] * p1_strength - block_strength)
             p2_health -= damage
             p2_stamina -= 5
             result_text += f"{p1_name} завдає {p1_action}, але {p2_name} блокує! Урон: {damage:.1f}\n"
+            p1_action_result = "Ти влучив, але суперник заблокував!"
+            p2_action_result = "Ти заблокував!"
         elif p2_action == "dodge":
             dodge_chance = 0.4 * p2_reaction * p2_punch_speed
             if random.random() < dodge_chance:
                 p2_stamina -= 5
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} ухилився!\n"
+                p1_action_result = "Ти промахнувся!"
+                p2_action_result = "Ти ухилився!"
+                # Контратака для гравця 2
+                counter_damage = params["base_damage"] * p2_strength
+                if p2_type == "counter_puncher":
+                    counter_damage *= 1.5
+                p1_health -= counter_damage
+                result_text += f"{p2_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 damage = params["base_damage"] * p1_strength
                 p2_health -= damage
                 result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Ухилення не вдалося. Урон: {damage:.1f}\n"
+                p1_action_result = "Ти влучив!"
+                p2_action_result = "Ухилення не вдалося!"
     elif p1_action == "dodge":
         p1_stamina -= 6
         result_text += f"{p1_name} намагається ухилитися.\n"
+        p1_action_result = "Ти намагався ухилитися."
     elif p1_action == "block":
         p1_stamina -= 5
         result_text += f"{p1_name} блокує.\n"
+        p1_action_result = "Ти блокуєш."
     elif p1_action == "rest":
         p1_stamina = min(p1_stamina + 30 * p1_stamina_stat, 100)
         result_text += f"{p1_name} відпочиває.\n"
+        p1_action_result = "Ти відпочиваєш."
     
     # Обробка дії Гравця 2
     if p2_action in attack_params:
@@ -747,72 +908,62 @@ async def process_round(match_id, timed_out=False):
             damage = params["base_damage"] * p2_strength
             p1_health -= damage
             result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Урон: {damage:.1f}\n"
+            p2_action_result = "Ти влучив!"
         elif p1_action == "block":
             block_strength = 0.5 * p1_stamina_stat * p1_strength
             damage = max(0, params["base_damage"] * p2_strength - block_strength)
             p1_health -= damage
             p1_stamina -= 5
             result_text += f"{p2_name} завдає {p2_action}, але {p1_name} блокує! Урон: {damage:.1f}\n"
+            p2_action_result = "Ти влучив, але суперник заблокував!"
+            p1_action_result = "Ти заблокував!"
         elif p1_action == "dodge":
             dodge_chance = 0.4 * p1_reaction * p1_punch_speed
             if random.random() < dodge_chance:
                 p1_stamina -= 5
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} ухилився!\n"
+                p2_action_result = "Ти промахнувся!"
+                p1_action_result = "Ти ухилився!"
+                # Контратака для гравця 1
+                counter_damage = params["base_damage"] * p1_strength
+                if p1_type == "counter_puncher":
+                    counter_damage *= 1.5
+                p2_health -= counter_damage
+                result_text += f"{p1_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 damage = params["base_damage"] * p2_strength
                 p1_health -= damage
                 result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Ухилення не вдалося. Урон: {damage:.1f}\n"
+                p2_action_result = "Ти влучив!"
+                p1_action_result = "Ухилення не вдалося!"
     elif p2_action == "dodge":
         p2_stamina -= 5
         result_text += f"{p2_name} намагається ухилитися.\n"
+        p2_action_result = "Ти намагався ухилитися."
     elif p2_action == "block":
         p2_stamina -= 5
         result_text += f"{p2_name} блокує.\n"
+        p2_action_result = "Ти блокуєш."
     elif p2_action == "rest":
-        p2_stamina = min(p2_stamina + 15 * p2_stamina_stat, 100)
+        p2_stamina = min(p2_stamina + 30 * p2_stamina_stat, 100)
         result_text += f"{p2_name} відпочиває.\n"
+        p2_action_result = "Ти відпочиваєш."
+    
+    # Відправка результатів дій
+    if p1_action_result:
+        await bot.send_message(player1_id, p1_action_result)
+    if p2_action_result:
+        await bot.send_message(player2_id, p2_action_result)
     
     # Перевірка нокдауну
     knockdown = False
     if p1_health <= 0 or p1_stamina <= 0:
-        deadline = time.time() + 10
-        c.execute(
-            "INSERT INTO knockdowns (match_id, player_id, deadline) VALUES (?, ?, ?)",
-            (match_id, player1_id, deadline)
-        )
-        conn.commit()
-        result_text += f"{p1_name} у нокдауні! В нього 10 секунд, щоб встати!\n"
-        await bot.send_message(
-            player1_id,
-            f"Ти в нокдауні! Натисни 'Встати' протягом 10 секунд!",
-            reply_markup=get_knockdown_keyboard(match_id)
-        )
-        await bot.send_message(
-            player2_id,
-            f"{p1_name} у нокдауні! Чи встане він? Залишилось 10 секунд."
-        )
+        await handle_knockdown(match_id, player1_id, player2_id, p1_name, p2_name)
         knockdown = True
-        logger.debug(f"Player {p1_name} in knockdown for match {match_id}")
     
     if p2_health <= 0 or p2_stamina <= 0:
-        deadline = time.time() + 10
-        c.execute(
-            "INSERT INTO knockdowns (match_id, player_id, deadline) VALUES (?, ?, ?)",
-            (match_id, player2_id, deadline)
-        )
-        conn.commit()
-        result_text += f"{p2_name} у нокдауні! В нього 10 секунд, щоб встати!\n"
-        await bot.send_message(
-            player2_id,
-            f"Ти в нокдауні! Натисни 'Встати' протягом 10 секунд!",
-            reply_markup=get_knockdown_keyboard(match_id)
-        )
-        await bot.send_message(
-            player1_id,
-            f"{p2_name} у нокдауні! Чи встане він? Залишилось 10 секунд."
-        )
+        await handle_knockdown(match_id, player2_id, player1_id, p2_name, p1_name)
         knockdown = True
-        logger.debug(f"Player {p2_name} in knockdown for match {match_id}")
     
     if knockdown:
         conn.close()
@@ -827,8 +978,8 @@ async def process_round(match_id, timed_out=False):
     )
     conn.commit()
     
-    p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_stats)
-    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_stats)
+    p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_max_health)
+    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)
     
     await bot.send_message(
         player1_id,

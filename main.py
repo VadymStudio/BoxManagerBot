@@ -1,4 +1,3 @@
-```python
 import logging
 import os
 import random
@@ -107,13 +106,16 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS rooms (
         token TEXT PRIMARY KEY,
         creator_id INTEGER,
+        opponent_id INTEGER,
         created_at REAL,
-        FOREIGN KEY (creator_id) REFERENCES users (user_id)
+        status TEXT,
+        FOREIGN KEY (creator_id) REFERENCES users (user_id),
+        FOREIGN KEY (opponent_id) REFERENCES users (user_id)
     )""")
     # Очищення активних матчів, нокдаунів і старих кімнат
     c.execute("DELETE FROM matches WHERE status = 'active'")
     c.execute("DELETE FROM knockdowns")
-    c.execute("DELETE FROM rooms WHERE created_at < ?", (time.time() - 300,))  # Видалити кімнати старше 5 хвилин
+    c.execute("DELETE FROM rooms WHERE created_at < ?", (time.time() - 300,))
     conn.commit()
     conn.close()
 
@@ -129,7 +131,7 @@ async def check_maintenance(message: types.Message):
         return False
     return True
 
-# Скидання стану для всіх команд
+# Скидання стану
 async def reset_state(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is not None:
@@ -150,6 +152,7 @@ async def setup_bot_commands():
         BotCommand(command="/start_match", description="Почати матч"),
         BotCommand(command="/create_room", description="Створити кімнату"),
         BotCommand(command="/join_room", description="Приєднатися до кімнати"),
+        BotCommand(command="/start_fight", description="Почати бій (тільки для творця кімнати)"),
         BotCommand(command="/refresh_commands", description="Оновити меню команд")
     ]
     
@@ -367,7 +370,7 @@ async def delete_account(message: types.Message, state: FSMContext):
     c.execute("DELETE FROM fighter_stats WHERE user_id = ?", (user_id,))
     c.execute("DELETE FROM matches WHERE player1_id = ? OR player2_id = ?", (user_id, user_id))
     c.execute("DELETE FROM knockdowns WHERE player_id = ?", (user_id,))
-    c.execute("DELETE FROM rooms WHERE creator_id = ?", (user_id,))
+    c.execute("DELETE FROM rooms WHERE creator_id = ? OR opponent_id = ?", (user_id, user_id))
     conn.commit()
     conn.close()
     await message.reply("Акаунт видалено! Можеш створити новий за допомогою /create_account.")
@@ -399,21 +402,25 @@ async def create_room(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    c.execute("SELECT token FROM rooms WHERE creator_id = ?", (user_id,))
+    c.execute("SELECT token FROM rooms WHERE creator_id = ? AND status = 'waiting'", (user_id,))
     if c.fetchone():
-        await message.reply("Ти вже створив кімнату! Видали акаунт або зачекай 5 хвилин.")
-        logger.debug(f"User {user_id} already has a room")
+        await message.reply("Ти вже створив кімнату! Зачекай, поки хтось приєднається, або видали акаунт.")
+        logger.debug(f"User {user_id} already has a waiting room")
         conn.close()
         return
     
     token = generate_room_token()
     try:
         c.execute(
-            "INSERT INTO rooms (token, creator_id, created_at) VALUES (?, ?, ?)",
-            (token, user_id, time.time())
+            "INSERT INTO rooms (token, creator_id, created_at, status) VALUES (?, ?, ?, ?)",
+            (token, user_id, time.time(), 'waiting')
         )
         conn.commit()
-        await message.reply(f"Кімната створена! Токен: {token}. Поділись ним із суперником.")
+        await message.reply(
+            f"Кімната створена! Токен: <code>{token}</code>\nПоділись ним із суперником. "
+            f"Коли суперник приєднається, використовуй /start_fight, щоб почати бій.",
+            parse_mode="HTML"
+        )
         logger.debug(f"Created room with token {token} for user {user_id}")
     except sqlite3.IntegrityError:
         await message.reply("Помилка: токен уже існує. Спробуй ще раз.")
@@ -432,7 +439,7 @@ async def join_room(message: types.Message, state: FSMContext):
     
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
+    c.execute("SELECT user_id, character_name FROM users WHERE user_id = ?", (user_id,))
     user = c.fetchone()
     if not user:
         await message.reply("Спочатку створи акаунт за допомогою /create_account!")
@@ -455,7 +462,7 @@ async def join_room(message: types.Message, state: FSMContext):
         return
     
     token = args[1].strip()
-    c.execute("SELECT creator_id, created_at FROM rooms WHERE token = ?", (token,))
+    c.execute("SELECT creator_id, created_at, opponent_id, status FROM rooms WHERE token = ?", (token,))
     room = c.fetchone()
     if not room:
         await message.reply("Кімната не знайдена або прострочена!")
@@ -463,10 +470,22 @@ async def join_room(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    creator_id, created_at = room
+    creator_id, created_at, opponent_id, status = room
     if creator_id == user_id:
         await message.reply("Ти не можеш приєднатися до власної кімнати!")
         logger.debug(f"User {user_id} tried to join own room {token}")
+        conn.close()
+        return
+    
+    if status != 'waiting':
+        await message.reply("Кімната вже закрита або бій розпочато!")
+        logger.debug(f"Room {token} is not in waiting status")
+        conn.close()
+        return
+    
+    if opponent_id is not None:
+        await message.reply("Кімната вже заповнена! Максимум 2 гравці.")
+        logger.debug(f"Room {token} already has 2 players")
         conn.close()
         return
     
@@ -478,48 +497,105 @@ async def join_room(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (creator_id,))
+    try:
+        c.execute(
+            "UPDATE rooms SET opponent_id = ?, status = 'ready' WHERE token = ?",
+            (user_id, token)
+        )
+        conn.commit()
+        await message.reply(
+            f"Ти приєднався до кімнати {token}! Чекай, поки творець розпочне бій (/start_fight)."
+        )
+        await bot.send_message(
+            creator_id,
+            f"Гравець {user[1]} приєднався до твоєї кімнати {token}! "
+            f"Використай /start_fight, щоб почати бій."
+        )
+        logger.debug(f"User {user_id} joined room {token}")
+    except sqlite3.Error as e:
+        await message.reply("Помилка при приєднанні до кімнати. Спробуй ще раз.")
+        logger.error(f"Database error joining room {token}: {e}")
+    finally:
+        conn.close()
+
+# Команда /start_fight
+@dp.message(Command("start_fight"))
+async def start_fight(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /start_fight from user {message.from_user.id}")
+    await reset_state(message, state)
+    if not await check_maintenance(message):
+        return
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT token, opponent_id, status FROM rooms WHERE creator_id = ? AND status = 'ready'", (user_id,))
+    room = c.fetchone()
+    if not room:
+        await message.reply("Ти не створив кімнату, або ще немає суперника!")
+        logger.debug(f"No ready room found for creator {user_id}")
+        conn.close()
+        return
+    
+    token, opponent_id, status = room
+    if opponent_id is None:
+        await message.reply("Суперник ще не приєднався! Зачекай.")
+        logger.debug(f"No opponent in room {token}")
+        conn.close()
+        return
+    
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (user_id,))
+    creator = c.fetchone()
+    c.execute("SELECT user_id, character_name, fighter_type FROM users WHERE user_id = ?", (opponent_id,))
     opponent = c.fetchone()
-    if not opponent:
-        await message.reply("Помилка: творець кімнати не знайдений.")
-        logger.error(f"Creator {creator_id} not found in users")
+    
+    if not creator or not opponent:
+        await message.reply("Помилка: дані гравців не знайдено.")
+        logger.error(f"User data missing for creator {user_id} or opponent {opponent_id}")
         conn.close()
         return
     
     c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (user_id,))
-    player_stats = c.fetchone()
-    c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (creator_id,))
+    creator_stats = c.fetchone()
+    c.execute("SELECT health, stamina FROM fighter_stats WHERE user_id = ?", (opponent_id,))
     opponent_stats = c.fetchone()
     
-    if not player_stats or not opponent_stats:
+    if not creator_stats or not opponent_stats:
         await message.reply("Помилка: не вдалося знайти статистику бійця. Спробуй видалити акаунт і створити новий.")
-        logger.error(f"Missing stats for user {user_id} or opponent {creator_id}")
+        logger.error(f"Missing stats for user {user_id} or opponent {opponent_id}")
         conn.close()
         return
     
-    action_deadline = time.time() + 30
-    c.execute(
-        """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
-        VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
-        (user_id, creator_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
-    )
-    conn.commit()
-    match_id = c.lastrowid
-    c.execute("DELETE FROM rooms WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
-    
-    keyboard = get_fight_keyboard(match_id)
-    await message.reply(
-        f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
-        reply_markup=keyboard
-    )
-    await bot.send_message(
-        chat_id=creator_id,
-        text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
-        reply_markup=keyboard
-    )
-    logger.debug(f"Started match {match_id} for user {user_id} vs {creator_id}")
+    try:
+        action_deadline = time.time() + 30
+        c.execute(
+            """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
+            VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+            (user_id, opponent_id, time.time(), creator_stats[0], creator_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
+        )
+        conn.commit()
+        match_id = c.lastrowid
+        c.execute("UPDATE rooms SET status = 'active' WHERE token = ?", (token,))
+        conn.commit()
+        
+        keyboard = get_fight_keyboard(match_id)
+        await message.reply(
+            f"Матч розпочато! Ти ({creator[1]}, {creator[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). "
+            f"Бій триває 3 хвилини. Обери дію (30 секунд):",
+            reply_markup=keyboard
+        )
+        await bot.send_message(
+            opponent_id,
+            f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {creator[1]} ({creator[2].capitalize()}). "
+            f"Бій триває 3 хвилини. Обери дію (30 секунд):",
+            reply_markup=keyboard
+        )
+        logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
+    except sqlite3.Error as e:
+        await message.reply("Помилка при створенні матчу. Спробуй ще раз.")
+        logger.error(f"Database error starting match for room {token}: {e}")
+    finally:
+        conn.close()
 
 # Команда /start_match
 @dp.message(Command("start_match"))
@@ -737,7 +813,7 @@ async def send_fight_message(match_id):
 
 # Формування тексту стану гравця
 def get_status_text(name, fighter_type, health, stamina, max_health):
-    return f"{name} ({fighter_type.capitalize()}):\nЗдоров’я: {health:.1f}/{max_health:.1f}, Енергія: {stamina:.1f}/100"
+    return f"{name} ({fighter_type.capitalize()}):\nЗдоров’я: {health:.1f}/{max_health:.1f}, Енергія |{stamina:.1f}/100"
 
 # Обробка нокдауну
 async def handle_knockdown(match_id, player_id, opponent_id, player_name, opponent_name):
@@ -979,7 +1055,7 @@ async def process_round(match_id, timed_out=False):
     conn.commit()
     
     p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_max_health)
-    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)
+    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_st بیمار, p2_max_health)
     
     await bot.send_message(
         player1_id,

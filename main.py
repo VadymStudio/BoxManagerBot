@@ -407,7 +407,7 @@ async def create_room(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-s    c.execute("SELECT token FROM rooms WHERE creator_id = ? AND status = 'waiting'", (user_id,))
+    c.execute("SELECT token FROM rooms WHERE creator_id = ? AND status = 'waiting'", (user_id,))
     if c.fetchone():
         await message.reply("Ти вже створив кімнату! Зачекай, поки хтось приєднається, або видали акаунт.")
         logger.debug(f"User {user_id} already has a waiting room")
@@ -586,12 +586,12 @@ async def start_fight(message: types.Message, state: FSMContext):
         keyboard = get_fight_keyboard(match_id, "far")
         await message.reply(
             f"Матч розпочато! Ти ({creator[1]}, {creator[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). "
-            f"Бій триває 3 х 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
+            f"Бій триває 3 х 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         await bot.send_message(
             opponent_id, f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {creator[1]} ({creator[2].capitalize()}). "
-            f"Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
+            f"Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
@@ -680,12 +680,12 @@ async def start_match(message: types.Message, state: FSMContext):
                 
                 keyboard = get_fight_keyboard(match_id, "far")
                 await message.reply(
-                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
+                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 await bot.send_message(
                     chat_id=opponent_id,
-                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
+                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")

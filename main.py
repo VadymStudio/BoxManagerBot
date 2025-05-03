@@ -439,6 +439,96 @@ async def join_room(message: types.Message, state: FSMContext):
     
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
+    c.execute("SELECT user_id, character_name FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        await message.reply("Спочатку створи акаунт за допомогою /create_account!")
+        logger.debug(f"No account for user {user_id} for /join_room")
+        conn.close()
+        return
+    
+    c.execute("SELECT match_id FROM matches WHERE (player1_id = ? OR player2_id = ?) AND status = 'active'", (user_id, user_id))
+    if c.fetchone():
+        await message.reply("Ти вже в матчі! Закінчи поточний бій.")
+        logger.debug(f"User {user_id} already in active match")
+        conn.close()
+        return
+    
+    args = message.text.split()
+    if len(args) != 2:
+        await message.reply("Вкажи токен кімнати: /join_room <token>")
+        logger.debug(f"Invalid /join_room command from user {user_id}")
+        conn.close()
+        return
+    
+    token = args[1].strip()
+    c.execute("SELECT creator_id, created_at, opponent_id, status FROM rooms WHERE token = ?", (token,))
+    room = c.fetchone()
+    if not room:
+        await message.reply("Кімната не знайдена або прострочена!")
+        logger.debug(f"Room with token {token} not found")
+        conn.close()
+        return
+    
+    creator_id, created_at, opponent_id, status = room
+    if creator_id == user_id:
+        await message.reply("Ти не можеш приєднатися до власної кімнати!")
+        logger.debug(f"User {user_id} tried to join own room {token}")
+        conn.close()
+        return
+    
+    if status != 'waiting':
+        await message.reply("Кімната вже закрита або бій розпочато!")
+        logger.debug(f"Room {token} is not in waiting status")
+        conn.close()
+        return
+    
+    if opponent_id is not None:
+        await message.reply("Кімната вже заповнена! Максимум 2 гравці.")
+        logger.debug(f"Room {token} already has 2 players")
+        conn.close()
+        return
+    
+    if time.time() - created_at > 300:
+        c.execute("DELETE FROM rooms WHERE token = ?", (token,))
+        conn.commit()
+        await message.reply("Кімната прострочена!")
+        logger.debug(f"Room {token} expired")
+        conn.close()
+        return
+    
+    try:
+        c.execute(
+            "UPDATE rooms SET opponent_id = ?, status = 'ready' WHERE token = ?",
+            (user_id, token)
+        )
+        conn.commit()
+        await message.reply(
+            f"Ти приєднався до кімнати {token}! Чекай, поки творець розпочне бій (/start_fight)."
+        )
+        await bot.send_message(
+            creator_id,
+            f"Гравець {user[1]} приєднався до твоєї кімнати {token}! "
+            f"Використай /start_fight, щоб почати бій."
+        )
+        logger.debug(f"User {user_id} joined room {token}")
+    except sqlite3.Error as e:
+        await message.reply("Помилка при приєднанні до кімнати. Спробуй ще раз.")
+        logger.error(f"Database error joining room {token}: {e}")
+    finally:
+        conn.close()
+
+# Команда /start_fight
+@dp.message(Command("start_fight"))
+async def start_fight(message: types.Message, state: FSMContext):
+    logger.debug(f"Received /start_fight from user {message.from_user.id}")
+    await reset_state(message, state)
+    if not await check_maintenance(message):
+        return
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
     c.execute("SELECT token, opponent_id, status FROM rooms WHERE creator_id = ? AND status = 'ready'", (user_id,))
     room = c.fetchone()
     if not room:
@@ -701,7 +791,7 @@ async def send_fight_message(match_id):
     p2_max_health = c.fetchone()[0]
     
     p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_max_health)
-    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)  # Перевірено: p2_stamina використовує латинські символи
+    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)  # Перевірено: використовується правильна змінна p2_stamina
     
     keyboard = get_fight_keyboard(match_id)
     action_deadline = time.time() + 30

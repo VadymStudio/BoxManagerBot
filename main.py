@@ -300,7 +300,7 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "stamina": 1.1,
             "strength": 1.5,
             "reaction": 1.1,
-            "health": 130,  # Змінено з 120 на 130
+            "health": 130,
             "punch_speed": 1.35,
             "will": 1.5,
             "footwork": 1.2
@@ -586,12 +586,12 @@ async def start_fight(message: types.Message, state: FSMContext):
         keyboard = get_fight_keyboard(match_id, "far")
         await message.reply(
             f"Матч розпочато! Ти ({creator[1]}, {creator[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). "
-            f"Бій триває 3 х 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
+            f"Бій триває 3 раунди по 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         await bot.send_message(
             opponent_id, f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {creator[1]} ({creator[2].capitalize()}). "
-            f"Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
+            f"Бій триває 3 раунди по 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
@@ -680,12 +680,12 @@ async def start_match(message: types.Message, state: FSMContext):
                 
                 keyboard = get_fight_keyboard(match_id, "far")
                 await message.reply(
-                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
+                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 раунди по 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 await bot.send_message(
                     chat_id=opponent_id,
-                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
+                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 раунди по 3 хвилини. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
@@ -1012,7 +1012,7 @@ async def process_round(match_id, timed_out=False):
         p1_stamina -= params["stamina_cost"]
         if p2_action not in ["dodge", "block"] and random.random() < hit_chance:
             if p1_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
-                damage = params["base_damage"] * p1_strength * p1_punch_speed  # Нова формула для джеба на далекій дистанції
+                damage = params["base_damage"] * p1_strength * p1_punch_speed
             else:
                 damage = params["base_damage"] * p1_strength
             if p2_action == "move_away":
@@ -1023,36 +1023,33 @@ async def process_round(match_id, timed_out=False):
             p2_health -= damage
             p1_action_result = "Ти влучив!"
         elif p2_action == "block":
-            block_success_chance = (0.4 * p2_strength) * (p2_health / 100)  # Нова формула шансу блоку
+            block_success_chance = (0.4 * p2_strength) * (p2_health / p2_max_health)
             p2_stamina -= 5
             if random.random() < block_success_chance:
-                damage = 0.1 * params["base_damage"] * p1_strength  # Успішний блок: 90% зменшення урону
+                damage = 0.1 * params["base_damage"] * p1_strength
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} успішно блокує! Урон: {damage:.1f}\n"
                 p1_action_result = "Ти влучив, але суперник успішно заблокував!"
                 p2_action_result = "Ти успішно заблокував!"
             else:
-                damage = 0.8 * params["base_damage"] * p1_strength  # Провал блоку: 20% зменшення урону
+                damage = 0.8 * params["base_damage"] * p1_strength
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} невдало блокує! Урон: {damage:.1f}\n"
                 p1_action_result = "Ти влучив, суперник невдало заблокував!"
                 p2_action_result = "Твій блок провалився!"
             p2_health -= damage
         elif p2_action == "dodge":
-            dodge_chance = 0.4 * p2_reaction * p2_punch_speed
-            p2_stamina -= 10  # Ухилення коштує 10 енергії
+            dodge_chance = min(0.8, 0.4 * p2_reaction * p2_punch_speed)
+            p2_stamina -= 10
             if random.random() < dodge_chance:
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} ухилився!\n"
                 p1_action_result = "Ти промахнувся!"
                 p2_action_result = "Ти ухилився!"
-                # Контратака тільки на близькій дистанції
-                if new_distance == "close" and random.random() < 0.15 * p2_reaction * p2_reaction:
-                    counter_damage = params["base_damage"] * p2_strength
-                    if p2_type == "counter_puncher":
-                        counter_damage *= 1.5
+                if new_distance == "close" and p2_type == "counter_puncher" and random.random() < 0.5:
+                    counter_damage = params["base_damage"] * p2_strength * 1.2
                     p1_health -= counter_damage
                     result_text += f"{p2_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 if p1_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
-                    damage = params["base_damage"] * p1_strength * p1_punch_speed  # Нова формула для джеба
+                    damage = params["base_damage"] * p1_strength * p1_punch_speed
                 else:
                     damage = params["base_damage"] * p1_strength
                 p2_health -= damage
@@ -1060,7 +1057,7 @@ async def process_round(match_id, timed_out=False):
                 p1_action_result = "Ти влучив!"
                 p2_action_result = "Ухилення не вдалося!"
     elif p1_action == "dodge":
-        p1_stamina -= 10  # Ухилення коштує 10 енергії
+        p1_stamina -= 10
         result_text += f"{p1_name} намагається ухилитися.\n"
         p1_action_result = "Ти намагався ухилитися."
     elif p1_action == "block":
@@ -1077,51 +1074,48 @@ async def process_round(match_id, timed_out=False):
         params = attack_params[p2_action]
         hit_chance = params["base_hit_chance"] * (p2_reaction * p2_punch_speed / 2)
         if new_distance == "cornered_p1":
-            hit_chance *= 1.1  # +10% шанс влучити
+            hit_chance *= 1.1
         p2_stamina -= params["stamina_cost"]
         if p1_action not in ["dodge", "block"] and random.random() < hit_chance:
             if p2_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
-                damage = params["base_damage"] * p2_strength * p2_punch_speed  # Нова формула для джеба на далекій дистанції
+                damage = params["base_damage"] * p2_strength * p2_punch_speed
             else:
                 damage = params["base_damage"] * p2_strength
             if p1_action == "move_away":
-                damage /= 4  # Урон зменшується в 4 рази
+                damage /= 4
                 result_text += f"{p2_name} завдає {p2_action} по {p1_name}, але той відступає! Урон: {damage:.1f}\n"
             else:
                 result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Урон: {damage:.1f}\n"
             p1_health -= damage
             p2_action_result = "Ти влучив!"
         elif p1_action == "block":
-            block_success_chance = (0.4 * p1_strength) * (p1_health / 100)  # Нова формула шансу блоку
+            block_success_chance = (0.4 * p1_strength) * (p1_health / p1_max_health)
             p1_stamina -= 5
             if random.random() < block_success_chance:
-                damage = 0.1 * params["base_damage"] * p2_strength  # Успішний блок: 90% зменшення урону
+                damage = 0.1 * params["base_damage"] * p2_strength
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} успішно блокує! Урон: {damage:.1f}\n"
                 p2_action_result = "Ти влучив, але суперник успішно заблокував!"
                 p1_action_result = "Ти успішно заблокував!"
             else:
-                damage = 0.8 * params["base_damage"] * p2_strength  # Провал блоку: 20% зменшення урону
+                damage = 0.8 * params["base_damage"] * p2_strength
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} невдало блокує! Урон: {damage:.1f}\n"
                 p2_action_result = "Ти влучив, суперник невдало заблокував!"
                 p1_action_result = "Твій блок провалився!"
             p1_health -= damage
         elif p1_action == "dodge":
-            dodge_chance = 0.4 * p1_reaction * p1_punch_speed
-            p1_stamina -= 10  # Ухилення коштує 10 енергії
+            dodge_chance = min(0.8, 0.4 * p1_reaction * p1_punch_speed)
+            p1_stamina -= 10
             if random.random() < dodge_chance:
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} ухилився!\n"
                 p2_action_result = "Ти промахнувся!"
                 p1_action_result = "Ти ухилився!"
-                # Контратака тільки на близькій дистанції
-                if new_distance == "close" and random.random() < 0.15 * p1_reaction * p1_reaction:
-                    counter_damage = params["base_damage"] * p1_strength
-                    if p1_type == "counter_puncher":
-                        counter_damage *= 1.5
+                if new_distance == "close" and p1_type == "counter_puncher" and random.random() < 0.5:
+                    counter_damage = params["base_damage"] * p1_strength * 1.2
                     p2_health -= counter_damage
                     result_text += f"{p1_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 if p2_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
-                    damage = params["base_damage"] * p2_strength * p2_punch_speed  # Нова формула для джеба
+                    damage = params["base_damage"] * p2_strength * p2_punch_speed
                 else:
                     damage = params["base_damage"] * p2_strength
                 p1_health -= damage
@@ -1129,7 +1123,7 @@ async def process_round(match_id, timed_out=False):
                 p2_action_result = "Ти влучив!"
                 p1_action_result = "Ухилення не вдалося!"
     elif p2_action == "dodge":
-        p2_stamina -= 10  # Ухилення коштує 10 енергії
+        p2_stamina -= 10
         result_text += f"{p2_name} намагається ухилитися.\n"
         p2_action_result = "Ти намагався ухилитися."
     elif p2_action == "block":
@@ -1152,11 +1146,11 @@ async def process_round(match_id, timed_out=False):
         await end_match(match_id, None, None, p1_health, p2_health)
         conn.close()
         return
-    elif p1_health <= 0 or p1_stamina <= 0:
+    elif p1_health < p1_max_health * 0.3 or p1_stamina <= 0:
         await handle_knockdown(match_id, player1_id, player2_id, p1_name, p2_name)
         conn.close()
         return
-    elif p2_health <= 0 or p2_stamina <= 0:
+    elif p2_health < p2_max_health * 0.3 or p2_stamina <= 0:
         await handle_knockdown(match_id, player2_id, player1_id, p2_name, p1_name)
         conn.close()
         return

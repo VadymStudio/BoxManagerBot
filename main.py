@@ -77,6 +77,7 @@ def init_db():
         health REAL,
         punch_speed REAL,
         will REAL,
+        footwork REAL,
         FOREIGN KEY (user_id) REFERENCES users (user_id)
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS matches (
@@ -93,6 +94,7 @@ def init_db():
         player2_health REAL,
         player2_stamina REAL,
         action_deadline REAL,
+        distance TEXT,
         FOREIGN KEY (player1_id) REFERENCES users (user_id),
         FOREIGN KEY (player2_id) REFERENCES users (user_id)
     )""")
@@ -263,9 +265,9 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         await state.update_data(character_name=character_name)
         fighter_descriptions = (
             "Вибери тип бійця (змінити вибір потім неможливо):\n\n"
-            "🔥 *Swarmer*: Агресивний боєць. Висока сила (1.5), воля (1.5), швидкість удару (1.35). Здоров’я: 120, виносливість: 1.1.\n"
-            "🥊 *Out-boxer*: Витривалий і тактичний. Висока виносливість (1.5), здоров’я (200). Сила: 1.15, воля: 1.3.\n"
-            "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5). Сила: 1.25, здоров’я: 100, воля: 1.2."
+            "🔥 *Swarmer*: Агресивний боєць. Висока сила (1.5), воля (1.5), швидкість удару (1.35), робота ніг (1.2). Здоров’я: 120, виносливість: 1.1.\n"
+            "🥊 *Out-boxer*: Витривалий і тактичний. Висока виносливість (1.5), здоров’я (200), робота ніг (1.4). Сила: 1.15, воля: 1.3.\n"
+            "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5), робота ніг (1.5). Сила: 1.25, здоров’я: 100, воля: 1.2."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Swarmer", callback_data="swarmer")],
@@ -300,7 +302,8 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "reaction": 1.1,
             "health": 120,
             "punch_speed": 1.35,
-            "will": 1.5
+            "will": 1.5,
+            "footwork": 1.2
         },
         "out_boxer": {
             "stamina": 1.5,
@@ -308,7 +311,8 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "reaction": 1.1,
             "health": 200,
             "punch_speed": 1.1,
-            "will": 1.3
+            "will": 1.3,
+            "footwork": 1.4
         },
         "counter_puncher": {
             "stamina": 1.15,
@@ -316,7 +320,8 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "reaction": 1.5,
             "health": 100,
             "punch_speed": 1.5,
-            "will": 1.2
+            "will": 1.2,
+            "footwork": 1.5
         }
     }
     
@@ -329,10 +334,10 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
         )
         stats = fighter_stats[fighter_type]
         c.execute(
-            """INSERT INTO fighter_stats (user_id, fighter_type, stamina, strength, reaction, health, punch_speed, will)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO fighter_stats (user_id, fighter_type, stamina, strength, reaction, health, punch_speed, will, footwork)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, fighter_type, stats["stamina"], stats["strength"], stats["reaction"],
-             stats["health"], stats["punch_speed"], stats["will"])
+             stats["health"], stats["punch_speed"], stats["will"], stats["footwork"])
         )
         conn.commit()
         await callback.message.reply(f"Акаунт створено! Персонаж: {character_name}, Тип: {fighter_type.capitalize()}")
@@ -402,7 +407,7 @@ async def create_room(message: types.Message, state: FSMContext):
         conn.close()
         return
     
-    c.execute("SELECT token FROM rooms WHERE creator_id = ? AND status = 'waiting'", (user_id,))
+s    c.execute("SELECT token FROM rooms WHERE creator_id = ? AND status = 'waiting'", (user_id,))
     if c.fetchone():
         await message.reply("Ти вже створив кімнату! Зачекай, поки хтось приєднається, або видали акаунт.")
         logger.debug(f"User {user_id} already has a waiting room")
@@ -569,8 +574,8 @@ async def start_fight(message: types.Message, state: FSMContext):
     try:
         action_deadline = time.time() + 30
         c.execute(
-            """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
-            VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+            """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline, distance)
+            VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?, 'far')""",
             (user_id, opponent_id, time.time(), creator_stats[0], creator_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
         )
         conn.commit()
@@ -578,16 +583,15 @@ async def start_fight(message: types.Message, state: FSMContext):
         c.execute("UPDATE rooms SET status = 'active' WHERE token = ?", (token,))
         conn.commit()
         
-        keyboard = get_fight_keyboard(match_id)
+        keyboard = get_fight_keyboard(match_id, "far")
         await message.reply(
             f"Матч розпочато! Ти ({creator[1]}, {creator[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). "
-            f"Бій триває 3 хвилини. Обери дію (30 секунд):",
+            f"Бій триває 3 х 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         await bot.send_message(
-            opponent_id,
-            f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {creator[1]} ({creator[2].capitalize()}). "
-            f"Бій триває 3 хвилини. Обери дію (30 секунд):",
+            opponent_id, f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {creator[1]} ({creator[2].capitalize()}). "
+            f"Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
             reply_markup=keyboard
         )
         logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
@@ -666,22 +670,22 @@ async def start_match(message: types.Message, state: FSMContext):
                 
                 action_deadline = time.time() + 30
                 c.execute(
-                    """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline)
-                    VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO matches (player1_id, player2_id, status, start_time, current_round, player1_health, player1_stamina, player2_health, player2_stamina, action_deadline, distance)
+                    VALUES (?, ?, 'active', ?, 1, ?, ?, ?, ?, ?, 'far')""",
                     (user_id, opponent_id, time.time(), player_stats[0], player_stats[1], opponent_stats[0], opponent_stats[1], action_deadline)
                 )
                 conn.commit()
                 match_id = c.lastrowid
                 conn.close()
                 
-                keyboard = get_fight_keyboard(match_id)
+                keyboard = get_fight_keyboard(match_id, "far")
                 await message.reply(
-                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
+                    f"Матч розпочато! Ти ({user[1]}, {user[2].capitalize()}) проти {opponent[1]} ({opponent[2].capitalize()}). Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 await bot.send_message(
                     chat_id=opponent_id,
-                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хвилини. Обери дію (30 секунд):",
+                    text=f"Матч розпочато! Ти ({opponent[1]}, {opponent[2].capitalize()}) проти {user[1]} ({user[2].capitalize()}). Бій триває 3 хminutes. Дистанція: Далеко. Обери дію (30 секунд):",
                     reply_markup=keyboard
                 )
                 logger.debug(f"Started match {match_id} for user {user_id} vs {opponent_id}")
@@ -700,19 +704,35 @@ async def start_match(message: types.Message, state: FSMContext):
         conn.close()
 
 # Клавіатура для бою
-def get_fight_keyboard(match_id):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Прямий удар", callback_data=f"fight_{match_id}_jab"),
-            InlineKeyboardButton(text="Апперкот", callback_data=f"fight_{match_id}_uppercut"),
-            InlineKeyboardButton(text="Хук", callback_data=f"fight_{match_id}_hook")
-        ],
-        [
-            InlineKeyboardButton(text="Ухилитися", callback_data=f"fight_{match_id}_dodge"),
-            InlineKeyboardButton(text="Блок", callback_data=f"fight_{match_id}_block"),
-            InlineKeyboardButton(text="Відпочинок", callback_data=f"fight_{match_id}_rest")
-        ]
-    ])
+def get_fight_keyboard(match_id, distance):
+    if distance == "close":
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Прямий удар", callback_data=f"fight_{match_id}_jab"),
+                InlineKeyboardButton(text="Ухилитися", callback_data=f"fight_{match_id}_dodge"),
+                InlineKeyboardButton(text="Блок", callback_data=f"fight_{match_id}_block")
+            ],
+            [
+                InlineKeyboardButton(text="Відійти", callback_data=f"fight_{match_id}_move_away"),
+                InlineKeyboardButton(text="Відпочинок", callback_data=f"fight_{match_id}_rest")
+            ]
+        ])
+    else:  # far, cornered_p1, cornered_p2
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Прямий удар", callback_data=f"fight_{match_id}_jab"),
+                InlineKeyboardButton(text="Апперкот", callback_data=f"fight_{match_id}_uppercut"),
+                InlineKeyboardButton(text="Хук", callback_data=f"fight_{match_id}_hook")
+            ],
+            [
+                InlineKeyboardButton(text="Ухилитися", callback_data=f"fight_{match_id}_dodge"),
+                InlineKeyboardButton(text="Блок", callback_data=f"fight_{match_id}_block"),
+                InlineKeyboardButton(text="Підійти", callback_data=f"fight_{match_id}_move_closer")
+            ],
+            [
+                InlineKeyboardButton(text="Відпочинок", callback_data=f"fight_{match_id}_rest")
+            ]
+        ])
     return keyboard
 
 # Обробка дій у бою
@@ -722,10 +742,11 @@ async def handle_fight_action(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     callback_data = callback.data.split("_")
     match_id, action = int(callback_data[1]), callback_data[2]
+    move_action = callback_data[3] if len(callback_data) > 3 else None
     
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("SELECT player1_id, player2_id, player1_action, player2_action, status, action_deadline FROM matches WHERE match_id = ?", (match_id,))
+    c.execute("SELECT player1_id, player2_id, player1_action, player2_action, status, action_deadline, distance FROM matches WHERE match_id = ?", (match_id,))
     match = c.fetchone()
     if not match or match[4] != "active":
         await callback.message.reply("Матч завершено або не існує.")
@@ -734,7 +755,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
         await callback.answer()
         return
     
-    player1_id, player2_id, player1_action, player2_action, status, action_deadline = match
+    player1_id, player2_id, player1_action, player2_action, status, action_deadline, distance = match
     
     if time.time() > action_deadline:
         await callback.message.reply("Час для дії минув! Раунд завершено автоматично.")
@@ -744,10 +765,32 @@ async def handle_fight_action(callback: types.CallbackQuery):
         await callback.answer()
         return
     
+    # Перевірка доступності дії залежно від дистанції
+    if distance == "close" and action in ["uppercut", "hook"]:
+        await callback.message.reply("На близькій дистанції доступний лише прямий удар!")
+        logger.debug(f"Invalid action {action} for close distance in match {match_id}")
+        conn.close()
+        await callback.answer()
+        return
+    if distance == "close" and action == "move_closer":
+        await callback.message.reply("Ви вже на близькій дистанції!")
+        logger.debug(f"Invalid action move_closer for close distance in match {match_id}")
+        conn.close()
+        await callback.answer()
+        return
+    if distance in ["far", "cornered_p1", "cornered_p2"] and action == "move_away":
+        await callback.message.reply("Ви вже на далекій дистанції!")
+        logger.debug(f"Invalid action move_away for far distance in match {match_id}")
+        conn.close()
+        await callback.answer()
+        return
+    
+    # Збереження дії
+    full_action = f"{action}_{move_action}" if move_action else action
     if user_id == player1_id:
-        c.execute("UPDATE matches SET player1_action = ? WHERE match_id = ?", (action, match_id))
+        c.execute("UPDATE matches SET player1_action = ? WHERE match_id = ?", (full_action, match_id))
     elif user_id == player2_id:
-        c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (action, match_id))
+        c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (full_action, match_id))
     else:
         await callback.message.reply("Ти не учасник цього матчу!")
         logger.debug(f"User {user_id} not in match {match_id}")
@@ -764,14 +807,14 @@ async def handle_fight_action(callback: types.CallbackQuery):
     
     conn.close()
     await callback.answer()
-    logger.debug(f"Processed fight action {action} for match {match_id} by user {user_id}")
+    logger.debug(f"Processed fight action {full_action} for match {match_id} by user {user_id}")
 
 # Надсилання повідомлення про бій
 async def send_fight_message(match_id):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute(
-        """SELECT player1_id, player2_id, player1_health, player1_stamina, player2_health, player2_stamina, current_round
+        """SELECT player1_id, player2_id, player1_health, player1_stamina, player2_health, player2_stamina, current_round, distance
         FROM matches WHERE match_id = ?""",
         (match_id,)
     )
@@ -780,7 +823,7 @@ async def send_fight_message(match_id):
         conn.close()
         return
     
-    player1_id, player2_id, p1_health, p1_stamina, p2_health, p2_stamina, round_num = match
+    player1_id, player2_id, p1_health, p1_stamina, p2_health, p2_stamina, round_num, distance = match
     c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player1_id,))
     p1_name, p1_type = c.fetchone()
     c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player2_id,))
@@ -791,21 +834,28 @@ async def send_fight_message(match_id):
     p2_max_health = c.fetchone()[0]
     
     p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_max_health)
-    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)  # Перевірено: використовується правильна змінна p2_stamina
+    p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)
     
-    keyboard = get_fight_keyboard(match_id)
+    distance_text = {
+        "far": "Далеко",
+        "close": "Близько",
+        "cornered_p1": f"{p1_name} у куті!",
+        "cornered_p2": f"{p2_name} у куті!"
+    }[distance]
+    
+    keyboard = get_fight_keyboard(match_id, distance)
     action_deadline = time.time() + 30
     c.execute("UPDATE matches SET action_deadline = ?, player1_action = NULL, player2_action = NULL WHERE match_id = ?", (action_deadline, match_id))
     conn.commit()
     
     await bot.send_message(
         player1_id,
-        f"Раунд {round_num}\n{p1_status_text}\n{p2_status_text}\nОбери дію (30 секунд):",
+        f"Раунд {round_num}\nДистанція: {distance_text}\n{p1_status_text}\n{p2_status_text}\nОбери дію (30 секунд):",
         reply_markup=keyboard
     )
     await bot.send_message(
         player2_id,
-        f"Раунд {round_num}\n{p2_status_text}\n{p1_status_text}\nОбери дію (30 секунд):",
+        f"Раунд {round_num}\nДистанція: {distance_text}\n{p2_status_text}\n{p1_status_text}\nОбери дію (30 секунд):",
         reply_markup=keyboard
     )
     
@@ -829,50 +879,38 @@ async def handle_knockdown(match_id, player_id, opponent_id, player_name, oppone
     match = c.fetchone()
     p1_id, p1_health, p1_stamina, p2_id, p2_health, p2_stamina = match
     
-    deadline = time.time() + 10
-    c.execute(
-        "INSERT INTO knockdowns (match_id, player_id, deadline) VALUES (?, ?, ?)",
-        (match_id, player_id, deadline)
-    )
-    conn.commit()
-    
-    await bot.send_message(player_id, f"Ти впав! У тебе 10 секунд, щоб встати.")
+    await bot.send_message(player_id, f"Ти впав! Чи зможеш встати?")
     await bot.send_message(opponent_id, f"{player_name} впав! Чи встане він?")
     
-    stand_chance = min(0.8, 0.2 + (will * 0.4))
-    start_time = time.time()
-    
-    while time.time() < deadline:
-        if random.random() < stand_chance:
-            if player_id == p1_id:
-                p1_health = 0.2 * max_health
-                p1_stamina = min(p1_stamina + 40, 100)
-                c.execute(
-                    "UPDATE matches SET player1_health = ?, player1_stamina = ? WHERE match_id = ?",
-                    (p1_health, p1_stamina, match_id)
-                )
-            else:
-                p2_health = 0.2 * max_health
-                p2_stamina = min(p2_stamina + 40, 100)
-                c.execute(
-                    "UPDATE matches SET player2_health = ?, player2_stamina = ? WHERE match_id = ?",
-                    (p2_health, p2_stamina, match_id)
-                )
-            c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, player_id))
-            conn.commit()
-            await bot.send_message(
-                player_id,
-                f"Ти встав після нокдауну! Здоров’я: {p1_health if player_id == p1_id else p2_health:.1f}, Енергія: {p1_stamina if player_id == p1_id else p2_stamina:.1f}"
+    stand_chance = 0.4 * will
+    if random.random() < stand_chance:
+        if player_id == p1_id:
+            p1_health = 0.2 * max_health
+            p1_stamina = min(p1_stamina + 40, 100)
+            c.execute(
+                "UPDATE matches SET player1_health = ?, player1_stamina = ? WHERE match_id = ?",
+                (p1_health, p1_stamina, match_id)
             )
-            await bot.send_message(
-                opponent_id,
-                f"{player_name} встав після нокдауну! Продовжуємо бій!"
+        else:
+            p2_health = 0.2 * max_health
+            p2_stamina = min(p2_stamina + 40, 100)
+            c.execute(
+                "UPDATE matches SET player2_health = ?, player2_stamina = ? WHERE match_id = ?",
+                (p2_health, p2_stamina, match_id)
             )
-            conn.close()
-            await send_fight_message(match_id)
-            return
-        
-        await asyncio.sleep(1)
+        c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, player_id))
+        conn.commit()
+        await bot.send_message(
+            player_id,
+            f"Ти встав після нокдауну! Здоров’я: {p1_health if player_id == p1_id else p2_health:.1f}, Енергія: {p1_stamina if player_id == p1_id else p2_stamina:.1f}"
+        )
+        await bot.send_message(
+            opponent_id,
+            f"{player_name} встав після нокдауну! Продовжуємо бій!"
+        )
+        conn.close()
+        await send_fight_message(match_id)
+        return
     
     c.execute("DELETE FROM knockdowns WHERE match_id = ? AND player_id = ?", (match_id, player_id))
     conn.commit()
@@ -885,23 +923,23 @@ async def process_round(match_id, timed_out=False):
     c = conn.cursor()
     c.execute(
         """SELECT player1_id, player2_id, player1_action, player2_action, player1_health, player1_stamina,
-        player2_health, player2_stamina, current_round, start_time FROM matches WHERE match_id = ?""",
+        player2_health, player2_stamina, current_round, start_time, distance FROM matches WHERE match_id = ?""",
         (match_id,)
     )
     match = c.fetchone()
-    player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num, start_time = match
+    player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num, start_time, distance = match
     
     c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player1_id,))
     p1_name, p1_type = c.fetchone()
     c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player2_id,))
     p2_name, p2_type = c.fetchone()
     
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will FROM fighter_stats WHERE user_id = ?", (player1_id,))
+    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will, footwork FROM fighter_stats WHERE user_id = ?", (player1_id,))
     p1_stats = c.fetchone()
-    p1_strength, p1_reaction, p1_punch_speed, p1_stamina_stat, p1_max_health, p1_will = p1_stats
-    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will FROM fighter_stats WHERE user_id = ?", (player2_id,))
+    p1_strength, p1_reaction, p1_punch_speed, p1_stamina_stat, p1_max_health, p1_will, p1_footwork = p1_stats
+    c.execute("SELECT strength, reaction, punch_speed, stamina, health, will, footwork FROM fighter_stats WHERE user_id = ?", (player2_id,))
     p2_stats = c.fetchone()
-    p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat, p2_max_health, p2_will = p2_stats
+    p2_strength, p2_reaction, p2_punch_speed, p2_stamina_stat, p2_max_health, p2_will, p2_footwork = p2_stats
     
     if time.time() > start_time + 180:
         await end_match(match_id, player1_id, player2_id, p1_health, p2_health)
@@ -924,20 +962,65 @@ async def process_round(match_id, timed_out=False):
     
     p1_action_result = ""
     p2_action_result = ""
+    new_distance = distance
+    
+    # Обробка дій руху
+    if p1_action == "move_closer" and random.random() < 0.4 * p1_footwork:
+        new_distance = "close"
+        result_text += f"{p1_name} наближається до {p2_name}!\n"
+        p1_action_result = "Ти наблизився!"
+        p1_stamina -= 5
+    elif p1_action == "move_away":
+        if random.random() < 0.1:  # Шанс потрапити в кут
+            new_distance = "cornered_p1"
+            result_text += f"{p1_name} відступає, але потрапляє в кут!\n"
+            p1_action_result = "Ти потрапив у кут!"
+        elif random.random() < 0.4 * p1_footwork:
+            new_distance = "far"
+            result_text += f"{p1_name} відступає від {p2_name}!\n"
+            p1_action_result = "Ти відступив!"
+        else:
+            result_text += f"{p1_name} не вдалося відступити!\n"
+            p1_action_result = "Відступ не вдався!"
+        p1_stamina -= 5
+    
+    if p2_action == "move_closer" and random.random() < 0.4 * p2_footwork:
+        new_distance = "close"
+        result_text += f"{p2_name} наближається до {p1_name}!\n"
+        p2_action_result = "Ти наблизився!"
+        p2_stamina -= 5
+    elif p2_action == "move_away":
+        if random.random() < 0.1:  # Шанс потрапити в кут
+            new_distance = "cornered_p2"
+            result_text += f"{p2_name} відступає, але потрапляє в кут!\n"
+            p2_action_result = "Ти потрапив у кут!"
+        elif random.random() < 0.4 * p2_footwork:
+            new_distance = "far"
+            result_text += f"{p2_name} відступає від {p1_name}!\n"
+            p2_action_result = "Ти відступив!"
+        else:
+            result_text += f"{p2_name} не вдалося відступити!\n"
+            p2_action_result = "Відступ не вдався!"
+        p2_stamina -= 5
     
     # Обробка дії Гравця 1
     if p1_action in attack_params:
         params = attack_params[p1_action]
         hit_chance = params["base_hit_chance"] * (p1_reaction * p1_punch_speed / 2)
+        if new_distance == "cornered_p2":
+            hit_chance *= 1.1  # +10% шанс влучити
         p1_stamina -= params["stamina_cost"]
         if p2_action not in ["dodge", "block"] and random.random() < hit_chance:
             damage = params["base_damage"] * p1_strength
+            if p2_action == "move_away":
+                damage /= 4  # Урон зменшується в 4 рази
+                result_text += f"{p1_name} завдає {p1_action} по {p2_name}, але той відступає! Урон: {damage:.1f}\n"
+            else:
+                result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Урон: {damage:.1f}\n"
             p2_health -= damage
-            result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Урон: {damage:.1f}\n"
             p1_action_result = "Ти влучив!"
         elif p2_action == "block":
-            block_strength = 0.5 * p2_stamina_stat * p2_strength
-            damage = max(0, params["base_damage"] * p1_strength - block_strength)
+            damage = 0.2 * params["base_damage"] * p1_strength  # Урон зменшується до 20%
             p2_health -= damage
             p2_stamina -= 5
             result_text += f"{p1_name} завдає {p1_action}, але {p2_name} блокує! Урон: {damage:.1f}\n"
@@ -945,17 +1028,18 @@ async def process_round(match_id, timed_out=False):
             p2_action_result = "Ти заблокував!"
         elif p2_action == "dodge":
             dodge_chance = 0.4 * p2_reaction * p2_punch_speed
+            p2_stamina -= 10  # Ухилення коштує 10 енергії
             if random.random() < dodge_chance:
-                p2_stamina -= 5
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} ухилився!\n"
                 p1_action_result = "Ти промахнувся!"
                 p2_action_result = "Ти ухилився!"
-                # Контратака для гравця 2
-                counter_damage = params["base_damage"] * p2_strength
-                if p2_type == "counter_puncher":
-                    counter_damage *= 1.5
-                p1_health -= counter_damage
-                result_text += f"{p2_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
+                # Контратака для гравця 2, якщо не в куті
+                if new_distance != "cornered_p2":
+                    counter_damage = params["base_damage"] * p2_strength
+                    if p2_type == "counter_puncher":
+                        counter_damage *= 1.5
+                    p1_health -= counter_damage
+                    result_text += f"{p2_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 damage = params["base_damage"] * p1_strength
                 p2_health -= damage
@@ -963,7 +1047,7 @@ async def process_round(match_id, timed_out=False):
                 p1_action_result = "Ти влучив!"
                 p2_action_result = "Ухилення не вдалося!"
     elif p1_action == "dodge":
-        p1_stamina -= 6
+        p1_stamina -= 10  # Ухилення коштує 10 енергії
         result_text += f"{p1_name} намагається ухилитися.\n"
         p1_action_result = "Ти намагався ухилитися."
     elif p1_action == "block":
@@ -979,15 +1063,20 @@ async def process_round(match_id, timed_out=False):
     if p2_action in attack_params:
         params = attack_params[p2_action]
         hit_chance = params["base_hit_chance"] * (p2_reaction * p2_punch_speed / 2)
+        if new_distance == "cornered_p1":
+            hit_chance *= 1.1  # +10% шанс влучити
         p2_stamina -= params["stamina_cost"]
         if p1_action not in ["dodge", "block"] and random.random() < hit_chance:
             damage = params["base_damage"] * p2_strength
+            if p1_action == "move_away":
+                damage /= 4  # Урон зменшується в 4 рази
+                result_text += f"{p2_name} завдає {p2_action} по {p1_name}, але той відступає! Урон: {damage:.1f}\n"
+            else:
+                result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Урон: {damage:.1f}\n"
             p1_health -= damage
-            result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Урон: {damage:.1f}\n"
             p2_action_result = "Ти влучив!"
         elif p1_action == "block":
-            block_strength = 0.5 * p1_stamina_stat * p1_strength
-            damage = max(0, params["base_damage"] * p2_strength - block_strength)
+            damage = 0.2 * params["base_damage"] * p2_strength  # Урон зменшується до 20%
             p1_health -= damage
             p1_stamina -= 5
             result_text += f"{p2_name} завдає {p2_action}, але {p1_name} блокує! Урон: {damage:.1f}\n"
@@ -995,17 +1084,18 @@ async def process_round(match_id, timed_out=False):
             p1_action_result = "Ти заблокував!"
         elif p1_action == "dodge":
             dodge_chance = 0.4 * p1_reaction * p1_punch_speed
+            p1_stamina -= 10  # Ухилення коштує 10 енергії
             if random.random() < dodge_chance:
-                p1_stamina -= 5
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} ухилився!\n"
                 p2_action_result = "Ти промахнувся!"
                 p1_action_result = "Ти ухилився!"
-                # Контратака для гравця 1
-                counter_damage = params["base_damage"] * p1_strength
-                if p1_type == "counter_puncher":
-                    counter_damage *= 1.5
-                p2_health -= counter_damage
-                result_text += f"{p1_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
+                # Контратака для гравця 1, якщо не в куті
+                if new_distance != "cornered_p1":
+                    counter_damage = params["base_damage"] * p1_strength
+                    if p1_type == "counter_puncher":
+                        counter_damage *= 1.5
+                    p2_health -= counter_damage
+                    result_text += f"{p1_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
             else:
                 damage = params["base_damage"] * p2_strength
                 p1_health -= damage
@@ -1013,7 +1103,7 @@ async def process_round(match_id, timed_out=False):
                 p2_action_result = "Ти влучив!"
                 p1_action_result = "Ухилення не вдалося!"
     elif p2_action == "dodge":
-        p2_stamina -= 5
+        p2_stamina -= 10  # Ухилення коштує 10 енергії
         result_text += f"{p2_name} намагається ухилитися.\n"
         p2_action_result = "Ти намагався ухилитися."
     elif p2_action == "block":
@@ -1049,23 +1139,30 @@ async def process_round(match_id, timed_out=False):
     new_deadline = time.time() + 30
     c.execute(
         """UPDATE matches SET player1_health = ?, player1_stamina = ?, player2_health = ?, player2_stamina = ?,
-        player1_action = NULL, player2_action = NULL, current_round = ?, action_deadline = ? WHERE match_id = ?""",
-        (p1_health, p1_stamina, p2_health, p2_stamina, round_num + 1, new_deadline, match_id)
+        player1_action = NULL, player2_action = NULL, current_round = ?, action_deadline = ?, distance = ? WHERE match_id = ?""",
+        (p1_health, p1_stamina, p2_health, p2_stamina, round_num + 1, new_deadline, new_distance, match_id)
     )
     conn.commit()
     
     p1_status_text = get_status_text(p1_name, p1_type, p1_health, p1_stamina, p1_max_health)
     p2_status_text = get_status_text(p2_name, p2_type, p2_health, p2_stamina, p2_max_health)
     
+    distance_text = {
+        "far": "Далеко",
+        "close": "Близько",
+        "cornered_p1": f"{p1_name} у куті!",
+        "cornered_p2": f"{p2_name} у куті!"
+    }[new_distance]
+    
     await bot.send_message(
         player1_id,
-        f"{result_text}\n{p1_status_text}\n{p2_status_text}\nОбери дію (30 секунд):",
-        reply_markup=get_fight_keyboard(match_id)
+        f"{result_text}\nДистанція: {distance_text}\n{p1_status_text}\n{p2_status_text}\nОбери дію (30 секунд):",
+        reply_markup=get_fight_keyboard(match_id, new_distance)
     )
     await bot.send_message(
         player2_id,
-        f"{result_text}\n{p2_status_text}\n{p1_status_text}\nОбери дію (30 секунд):",
-        reply_markup=get_fight_keyboard(match_id)
+        f"{result_text}\nДистанція: {distance_text}\n{p2_status_text}\n{p1_status_text}\nОбери дію (30 секунд):",
+        reply_markup=get_fight_keyboard(match_id, new_distance)
     )
     logger.debug(f"Processed round {round_num} for match {match_id}")
     

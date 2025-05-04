@@ -748,7 +748,6 @@ async def handle_fight_action(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     callback_data = callback.data.split("_")
     match_id, action = int(callback_data[1]), callback_data[2]
-    move_action = callback_data[3] if len(callback_data) > 3 else None
     
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -792,11 +791,10 @@ async def handle_fight_action(callback: types.CallbackQuery):
         return
     
     # Збереження дії
-    full_action = f"{action}_{move_action}" if move_action else action
     if user_id == player1_id:
-        c.execute("UPDATE matches SET player1_action = ? WHERE match_id = ?", (full_action, match_id))
+        c.execute("UPDATE matches SET player1_action = ? WHERE match_id = ?", (action, match_id))
     elif user_id == player2_id:
-        c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (full_action, match_id))
+        c.execute("UPDATE matches SET player2_action = ? WHERE match_id = ?", (action, match_id))
     else:
         await callback.message.reply("Ти не учасник цього матчу!")
         logger.debug(f"User {user_id} not in match {match_id}")
@@ -813,7 +811,7 @@ async def handle_fight_action(callback: types.CallbackQuery):
     
     conn.close()
     await callback.answer()
-    logger.debug(f"Processed fight action {full_action} for match {match_id} by user {user_id}")
+    logger.debug(f"Processed fight action {action} for match {match_id} by user {user_id}")
 
 # Надсилання повідомлення про бій
 async def send_fight_message(match_id):
@@ -1372,9 +1370,33 @@ async def handle_webhook(request):
 
 # Запуск бота
 async def main():
-    app = web.Application()
-    app.router.add_post(f"/webhook/{TELEGRAM_TOKEN}", handle_webhook)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 10000))
+    try:
+        # Ініціалізація веб-сервера
+        app = web.Application()
+        app.router.add_post(f"/webhook/{TELEGRAM_TOKEN}", handle_webhook)
+        
+        # Налаштування старту та завершення
+        app.on_startup.append(lambda _: on_startup())
+        app.on_shutdown.append(lambda _: on_shutdown())
+        
+        # Запуск веб-сервера
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.getenv("PORT", 10000))  # Render передає порт через змінну PORT
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info(f"Server started on port {port}")
+        
+        # Утримання програми в робочому стані
+        await asyncio.Event().wait()
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")

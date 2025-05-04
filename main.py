@@ -1,3 +1,9 @@
+# Встановлення залежностей:
+# Виконайте наступну команду в терміналі, щоб встановити необхідні бібліотеки:
+# pip install aiogram aiohttp python-dotenv
+# Якщо використовуєте віртуальне середовище, переконайтеся, що воно активоване.
+# У VS Code виберіть правильний інтерпретатор Python (Ctrl+Shift+P -> Python: Select Interpreter).
+
 import logging
 import os
 import random
@@ -265,9 +271,9 @@ async def handle_character_name(message: types.Message, state: FSMContext):
         await state.update_data(character_name=character_name)
         fighter_descriptions = (
             "Вибери тип бійця (змінити вибір потім неможливо):\n\n"
-            "🔥 *Swarmer*: Агресивний боєць. Висока сила (1.5), воля (1.5), швидкість удару (1.35), робота ніг (1.2). Здоров’я: 130, виносливість: 1.1.\n"
-            "🥊 *Out-boxer*: Витривалий і тактичний. Висока виносливість (1.5), здоров’я (200), робота ніг (1.4). Сила: 1.15, воля: 1.3.\n"
-            "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5), робота ніг (1.5). Сила: 1.25, здоров’я: 100, воля: 1.2."
+            "🔥 *Swarmer*: Агресивний боєць. Висока сила (1.5), воля (1.5), швидкість удару (1.35), робота ніг (1.2). Здоров’я: 195, виносливість: 1.1.\n"
+            "🥊 *Out-boxer*: Витривалий і тактичний. Висока виносливість (1.5), здоров’я: 300, робота ніг (1.4). Сила: 1.15, воля: 1.3.\n"
+            "⚡ *Counter-puncher*: Майстер контратаки. Висока реакція (1.5), швидкість удару (1.5), робота ніг (1.5). Сила: 1.25, здоров’я: 150, воля: 1.2."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Swarmer", callback_data="swarmer")],
@@ -300,7 +306,7 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "stamina": 1.1,
             "strength": 1.5,
             "reaction": 1.1,
-            "health": 130,
+            "health": 195,
             "punch_speed": 1.35,
             "will": 1.5,
             "footwork": 1.2
@@ -309,7 +315,7 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "stamina": 1.5,
             "strength": 1.15,
             "reaction": 1.1,
-            "health": 200,
+            "health": 300,
             "punch_speed": 1.1,
             "will": 1.3,
             "footwork": 1.4
@@ -318,7 +324,7 @@ async def handle_fighter_type(callback: types.CallbackQuery, state: FSMContext):
             "stamina": 1.15,
             "strength": 1.25,
             "reaction": 1.5,
-            "health": 100,
+            "health": 150,
             "punch_speed": 1.5,
             "will": 1.2,
             "footwork": 1.5
@@ -882,17 +888,18 @@ async def handle_knockdown(match_id, player_id, opponent_id, player_name, oppone
     await bot.send_message(player_id, f"Ти впав! Чи зможеш встати?")
     await bot.send_message(opponent_id, f"{player_name} впав! Чи встане він?")
     
+    # Формула шансу вставання: 0.4 * will
     stand_chance = 0.4 * will
     if random.random() < stand_chance:
         if player_id == p1_id:
-            p1_health = 0.2 * max_health
+            p1_health = max(0.2 * max_health, p1_health)  # Відновлення до 20% здоров’я, якщо здоров’я було 0
             p1_stamina = min(p1_stamina + 40, 100)
             c.execute(
                 "UPDATE matches SET player1_health = ?, player1_stamina = ? WHERE match_id = ?",
                 (p1_health, p1_stamina, match_id)
             )
         else:
-            p2_health = 0.2 * max_health
+            p2_health = max(0.2 * max_health, p2_health)
             p2_stamina = min(p2_stamina + 40, 100)
             c.execute(
                 "UPDATE matches SET player2_health = ?, player2_stamina = ? WHERE match_id = ?",
@@ -955,7 +962,7 @@ async def process_round(match_id, timed_out=False):
         result_text += "Час минув! Обидва гравці відпочивають.\n"
     
     attack_params = {
-        "jab": {"base_damage": 7, "stamina_cost": 6, "base_hit_chance": 0.9},
+        "jab": {"base_damage": 10, "stamina_cost": 6, "base_hit_chance": 0.9},
         "uppercut": {"base_damage": 25, "stamina_cost": 19, "base_hit_chance": 0.6},
         "hook": {"base_damage": 19, "stamina_cost": 15, "base_hit_chance": 0.75}
     }
@@ -964,6 +971,11 @@ async def process_round(match_id, timed_out=False):
     p2_action_result = ""
     new_distance = distance
     
+    # Логування стану перед обробкою
+    logger.debug(f"Before round {round_num} for match {match_id}:")
+    logger.debug(f"Player 1 ({p1_name}) health: {p1_health:.1f}/{p1_max_health:.1f}, stamina: {p1_stamina:.1f}, action: {p1_action}")
+    logger.debug(f"Player 2 ({p2_name}) health: {p2_health:.1f}/{p2_max_health:.1f}, stamina: {p2_stamina:.1f}, action: {p2_action}")
+    
     # Обробка дій руху
     if p1_action == "move_closer" and random.random() < 0.4 * p1_footwork:
         new_distance = "close"
@@ -971,7 +983,7 @@ async def process_round(match_id, timed_out=False):
         p1_action_result = "Ти наблизився!"
         p1_stamina -= 5
     elif p1_action == "move_away":
-        if random.random() < 0.1:  # Шанс потрапити в кут
+        if random.random() < 0.1:
             new_distance = "cornered_p1"
             result_text += f"{p1_name} відступає, але потрапляє в кут!\n"
             p1_action_result = "Ти потрапив у кут!"
@@ -990,7 +1002,7 @@ async def process_round(match_id, timed_out=False):
         p2_action_result = "Ти наблизився!"
         p2_stamina -= 5
     elif p2_action == "move_away":
-        if random.random() < 0.1:  # Шанс потрапити в кут
+        if random.random() < 0.1:
             new_distance = "cornered_p2"
             result_text += f"{p2_name} відступає, але потрапляє в кут!\n"
             p2_action_result = "Ти потрапив у кут!"
@@ -1008,7 +1020,7 @@ async def process_round(match_id, timed_out=False):
         params = attack_params[p1_action]
         hit_chance = params["base_hit_chance"] * (p1_reaction * p1_punch_speed / 2)
         if new_distance == "cornered_p2":
-            hit_chance *= 1.1  # +10% шанс влучити
+            hit_chance *= 1.1
         p1_stamina -= params["stamina_cost"]
         if p2_action not in ["dodge", "block"] and random.random() < hit_chance:
             if p1_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
@@ -1016,12 +1028,14 @@ async def process_round(match_id, timed_out=False):
             else:
                 damage = params["base_damage"] * p1_strength
             if p2_action == "move_away":
-                damage /= 4  # Урон зменшується в 4 рази
+                damage /= 4
                 result_text += f"{p1_name} завдає {p1_action} по {p2_name}, але той відступає! Урон: {damage:.1f}\n"
             else:
                 result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Урон: {damage:.1f}\n"
             p2_health -= damage
+            p2_stamina -= damage / 10
             p1_action_result = "Ти влучив!"
+            logger.debug(f"Player 1 dealt {damage:.1f} damage to Player 2 with {p1_action}, reduced stamina by {damage/10:.1f}")
         elif p2_action == "block":
             block_success_chance = (0.4 * p2_strength) * (p2_health / p2_max_health)
             p2_stamina -= 5
@@ -1030,12 +1044,17 @@ async def process_round(match_id, timed_out=False):
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} успішно блокує! Урон: {damage:.1f}\n"
                 p1_action_result = "Ти влучив, але суперник успішно заблокував!"
                 p2_action_result = "Ти успішно заблокував!"
+                p2_health -= damage
+                p2_stamina -= damage / 10
+                logger.debug(f"Player 2 blocked, reduced damage: {damage:.1f}, stamina: {damage/10:.1f}")
             else:
                 damage = 0.8 * params["base_damage"] * p1_strength
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} невдало блокує! Урон: {damage:.1f}\n"
                 p1_action_result = "Ти влучив, суперник невдало заблокував!"
                 p2_action_result = "Твій блок провалився!"
-            p2_health -= damage
+                p2_health -= damage
+                p2_stamina -= damage / 10
+                logger.debug(f"Player 2 failed block, damage: {damage:.1f}, stamina: {damage/10:.1f}")
         elif p2_action == "dodge":
             dodge_chance = min(0.8, 0.4 * p2_reaction * p2_punch_speed)
             p2_stamina -= 10
@@ -1043,31 +1062,39 @@ async def process_round(match_id, timed_out=False):
                 result_text += f"{p1_name} завдає {p1_action}, але {p2_name} ухилився!\n"
                 p1_action_result = "Ти промахнувся!"
                 p2_action_result = "Ти ухилився!"
+                logger.debug(f"Player 2 dodged Player 1's {p1_action}")
                 if new_distance == "close" and p2_type == "counter_puncher" and random.random() < 0.5:
-                    counter_damage = params["base_damage"] * p2_strength * 1.2
+                    counter_damage = params["base_damage"] * p2_strength * 1.5
                     p1_health -= counter_damage
+                    p1_stamina -= counter_damage / 10
                     result_text += f"{p2_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
+                    logger.debug(f"Player 2 counter-attacked, critical damage: {counter_damage:.1f}, stamina: {counter_damage/10:.1f}")
             else:
                 if p1_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
                     damage = params["base_damage"] * p1_strength * p1_punch_speed
                 else:
                     damage = params["base_damage"] * p1_strength
                 p2_health -= damage
+                p2_stamina -= damage / 10
                 result_text += f"{p1_name} завдає {p1_action} по {p2_name}! Ухилення не вдалося. Урон: {damage:.1f}\n"
                 p1_action_result = "Ти влучив!"
                 p2_action_result = "Ухилення не вдалося!"
+                logger.debug(f"Player 2 failed dodge, damage: {damage:.1f}, stamina: {damage/10:.1f}")
     elif p1_action == "dodge":
         p1_stamina -= 10
         result_text += f"{p1_name} намагається ухилитися.\n"
         p1_action_result = "Ти намагався ухилитися."
+        logger.debug(f"Player 1 attempted dodge")
     elif p1_action == "block":
         p1_stamina -= 5
         result_text += f"{p1_name} блокує.\n"
         p1_action_result = "Ти блокуєш."
+        logger.debug(f"Player 1 blocked")
     elif p1_action == "rest":
         p1_stamina = min(p1_stamina + 30 * p1_stamina_stat, 100)
         result_text += f"{p1_name} відпочиває.\n"
         p1_action_result = "Ти відпочиваєш."
+        logger.debug(f"Player 1 rested, stamina: {p1_stamina:.1f}")
     
     # Обробка дії Гравця 2
     if p2_action in attack_params:
@@ -1087,7 +1114,9 @@ async def process_round(match_id, timed_out=False):
             else:
                 result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Урон: {damage:.1f}\n"
             p1_health -= damage
+            p1_stamina -= damage / 10
             p2_action_result = "Ти влучив!"
+            logger.debug(f"Player 2 dealt {damage:.1f} damage to Player 1 with {p2_action}, reduced stamina by {damage/10:.1f}")
         elif p1_action == "block":
             block_success_chance = (0.4 * p1_strength) * (p1_health / p1_max_health)
             p1_stamina -= 5
@@ -1096,12 +1125,17 @@ async def process_round(match_id, timed_out=False):
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} успішно блокує! Урон: {damage:.1f}\n"
                 p2_action_result = "Ти влучив, але суперник успішно заблокував!"
                 p1_action_result = "Ти успішно заблокував!"
+                p1_health -= damage
+                p1_stamina -= damage / 10
+                logger.debug(f"Player 1 blocked, reduced damage: {damage:.1f}, stamina: {damage/10:.1f}")
             else:
                 damage = 0.8 * params["base_damage"] * p2_strength
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} невдало блокує! Урон: {damage:.1f}\n"
                 p2_action_result = "Ти влучив, суперник невдало заблокував!"
                 p1_action_result = "Твій блок провалився!"
-            p1_health -= damage
+                p1_health -= damage
+                p1_stamina -= damage / 10
+                logger.debug(f"Player 1 failed block, damage: {damage:.1f}, stamina: {damage/10:.1f}")
         elif p1_action == "dodge":
             dodge_chance = min(0.8, 0.4 * p1_reaction * p1_punch_speed)
             p1_stamina -= 10
@@ -1109,31 +1143,45 @@ async def process_round(match_id, timed_out=False):
                 result_text += f"{p2_name} завдає {p2_action}, але {p1_name} ухилився!\n"
                 p2_action_result = "Ти промахнувся!"
                 p1_action_result = "Ти ухилився!"
+                logger.debug(f"Player 1 dodged Player 2's {p2_action}")
                 if new_distance == "close" and p1_type == "counter_puncher" and random.random() < 0.5:
-                    counter_damage = params["base_damage"] * p1_strength * 1.2
+                    counter_damage = params["base_damage"] * p1_strength * 1.5
                     p2_health -= counter_damage
+                    p2_stamina -= counter_damage / 10
                     result_text += f"{p1_name} контратакує після ухилення! Урон: {counter_damage:.1f}\n"
+                    logger.debug(f"Player 1 counter-attacked, critical damage: {counter_damage:.1f}, stamina: {counter_damage/10:.1f}")
             else:
                 if p2_action == "jab" and new_distance in ["far", "cornered_p1", "cornered_p2"]:
                     damage = params["base_damage"] * p2_strength * p2_punch_speed
                 else:
                     damage = params["base_damage"] * p2_strength
                 p1_health -= damage
+                p1_stamina -= damage / 10
                 result_text += f"{p2_name} завдає {p2_action} по {p1_name}! Ухилення не вдалося. Урон: {damage:.1f}\n"
                 p2_action_result = "Ти влучив!"
                 p1_action_result = "Ухилення не вдалося!"
+                logger.debug(f"Player 1 failed dodge, damage: {damage:.1f}, stamina: {damage/10:.1f}")
     elif p2_action == "dodge":
         p2_stamina -= 10
         result_text += f"{p2_name} намагається ухилитися.\n"
         p2_action_result = "Ти намагався ухилитися."
+        logger.debug(f"Player 2 attempted dodge")
     elif p2_action == "block":
         p2_stamina -= 5
         result_text += f"{p2_name} блокує.\n"
         p2_action_result = "Ти блокуєш."
+        logger.debug(f"Player 2 blocked")
     elif p2_action == "rest":
         p2_stamina = min(p2_stamina + 30 * p2_stamina_stat, 100)
         result_text += f"{p2_name} відпочиває.\n"
         p2_action_result = "Ти відпочиваєш."
+        logger.debug(f"Player 2 rested, stamina: {p2_stamina:.1f}")
+    
+    # Обмеження мінімального здоров’я та енергії
+    p1_health = max(0, p1_health)
+    p2_health = max(0, p2_health)
+    p1_stamina = max(0, p1_stamina)
+    p2_stamina = max(0, p2_stamina)
     
     # Відправка результатів дій
     if p1_action_result:
@@ -1141,16 +1189,21 @@ async def process_round(match_id, timed_out=False):
     if p2_action_result:
         await bot.send_message(player2_id, p2_action_result)
     
-    # Перевірка нокдауну
+    # Логування стану після обробки
+    logger.debug(f"After round {round_num} for match {match_id}:")
+    logger.debug(f"Player 1 ({p1_name}) health: {p1_health:.1f}/{p1_max_health:.1f}, stamina: {p1_stamina:.1f}")
+    logger.debug(f"Player 2 ({p2_name}) health: {p2_health:.1f}/{p2_max_health:.1f}, stamina: {p2_stamina:.1f}")
+    
+    # Перевірка нокдауну при нульовій енергії або здоров’ї
     if p1_health <= 0 and p2_health <= 0:
         await end_match(match_id, None, None, p1_health, p2_health)
         conn.close()
         return
-    elif p1_health < p1_max_health * 0.3 or p1_stamina <= 0:
+    elif p1_health <= 0 or p1_stamina <= 0:
         await handle_knockdown(match_id, player1_id, player2_id, p1_name, p2_name)
         conn.close()
         return
-    elif p2_health < p2_max_health * 0.3 or p2_stamina <= 0:
+    elif p2_health <= 0 or p2_stamina <= 0:
         await handle_knockdown(match_id, player2_id, player1_id, p2_name, p1_name)
         conn.close()
         return
@@ -1192,126 +1245,136 @@ async def process_round(match_id, timed_out=False):
 async def end_match(match_id, loser_id, winner_id, p1_health, p2_health):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("SELECT player1_id, player2_id FROM matches WHERE match_id = ?", (match_id,))
+    c.execute(
+        """SELECT player1_id, player2_id, current_round FROM matches WHERE match_id = ?""",
+        (match_id,)
+    )
     match = c.fetchone()
-    player1_id, player2_id = match
+    if not match:
+        logger.error(f"Match {match_id} not found for end_match")
+        conn.close()
+        return
     
+    player1_id, player2_id, round_num = match
     c.execute("SELECT character_name FROM users WHERE user_id = ?", (player1_id,))
     p1_name = c.fetchone()[0]
     c.execute("SELECT character_name FROM users WHERE user_id = ?", (player2_id,))
     p2_name = c.fetchone()[0]
     
+    # Визначення результату
+    if loser_id is None and winner_id is None:
+        if p1_health > p2_health:
+            winner_id, loser_id = player1_id, player2_id
+            result_text = f"Матч завершено після {round_num} раундів! Переможець: {p1_name} (залишилось здоров’я: {p1_health:.1f})!"
+        elif p2_health > p1_health:
+            winner_id, loser_id = player2_id, player1_id
+            result_text = f"Матч завершено після {round_num} раундів! Переможець: {p2_name} (залишилось здоров’я: {p2_health:.1f})!"
+        else:
+            result_text = f"Матч завершено після {round_num} раундів! Нічия!"
+    elif loser_id == player1_id:
+        result_text = f"Матч завершено! {p1_name} програв через нокаут! Переможець: {p2_name}!"
+    elif loser_id == player2_id:
+        result_text = f"Матч завершено! {p2_name} програв через нокаут! Переможець: {p1_name}!"
+    
+    # Оновлення статусу матчу
     c.execute("UPDATE matches SET status = 'finished' WHERE match_id = ?", (match_id,))
     c.execute("DELETE FROM knockdowns WHERE match_id = ?", (match_id,))
+    c.execute("UPDATE rooms SET status = 'finished' WHERE creator_id = ? OR opponent_id = ?", (player1_id, player2_id))
     conn.commit()
     conn.close()
     
-    if loser_id is None and p1_health <= 0 and p2_health <= 0:
-        result = "Нічия! Обидва бійці втратили все здоров’я."
-    elif loser_id == player1_id:
-        result = f"{p2_name} переміг!"
-    elif loser_id == player2_id:
-        result = f"{p1_name} переміг!"
-    else:
-        result = "Матч завершено за часом. Переможець визначається за здоров’ям:\n"
-        result += f"{p1_name}: HP {p1_health:.1f}\n{p2_name}: HP {p2_health:.1f}\n"
-        result += f"{p1_name} переміг!" if p1_health > p2_health else f"{p2_name} переміг!" if p2_health > p1_health else "Нічия!"
-    
-    await bot.send_message(player1_id, result)
-    await bot.send_message(player2_id, result)
-    logger.debug(f"Ended match {match_id}: {result}")
+    # Відправка повідомлень
+    await bot.send_message(player1_id, result_text)
+    await bot.send_message(player2_id, result_text)
+    logger.debug(f"Match {match_id} ended: {result_text}")
 
-# Адмінська команда /admin_setting
+# Команди адмінів
 @dp.message(Command("admin_setting"))
 async def admin_setting(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    logger.debug(f"Received /admin_setting from user {user_id}")
+    logger.debug(f"Received /admin_setting from user {message.from_user.id}")
     await reset_state(message, state)
-    if user_id not in ADMIN_IDS:
-        await message.reply("Доступ заборонено!")
-        logger.debug(f"Access denied for /admin_setting for user {user_id}")
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("У тебе немає доступу до адмін-панелі!")
+        logger.debug(f"Unauthorized admin access attempt by user {message.from_user.id}")
         return
-    await message.reply(
-        "Адмін-панель:\n"
-        "/maintenance_on - Увімкнути технічні роботи\n"
-        "/maintenance_off - Вимкнути технічні роботи"
-    )
-    logger.debug(f"Sent admin panel to user {user_id}")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Увімкнути технічні роботи", callback_data="maintenance_on")],
+        [InlineKeyboardButton(text="Вимкнути технічні роботи", callback_data="maintenance_off")],
+    ])
+    await message.reply("Адмін-панель:", reply_markup=keyboard)
+    logger.debug(f"Admin panel opened for user {message.from_user.id}")
 
-# Увімкнення технічних робіт
+@dp.callback_query(lambda c: c.data in ["maintenance_on", "maintenance_off"])
+async def handle_admin_action(callback: types.CallbackQuery):
+    logger.debug(f"Received admin action from user {callback.from_user.id}: {callback.data}")
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.message.reply("У тебе немає доступу до адмін-панелі!")
+        logger.debug(f"Unauthorized admin action attempt by user {callback.from_user.id}")
+        await callback.answer()
+        return
+    
+    global maintenance_mode
+    if callback.data == "maintenance_on":
+        maintenance_mode = True
+        await callback.message.reply("Технічні роботи увімкнено. Доступ обмежено для всіх, крім адмінів.")
+        logger.info("Maintenance mode enabled")
+    else:
+        maintenance_mode = False
+        await callback.message.reply("Технічні роботи вимкнено. Бот доступний для всіх.")
+        logger.info("Maintenance mode disabled")
+    
+    await callback.answer()
+
 @dp.message(Command("maintenance_on"))
 async def maintenance_on(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    logger.debug(f"Received /maintenance_on from user {user_id}")
+    logger.debug(f"Received /maintenance_on from user {message.from_user.id}")
     await reset_state(message, state)
-    if user_id not in ADMIN_IDS:
-        await message.reply("Доступ заборонено!")
-        logger.debug(f"Access denied for /maintenance_on for user {user_id}")
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("У тебе немає доступу до цієї команди!")
+        logger.debug(f"Unauthorized /maintenance_on attempt by user {message.from_user.id}")
         return
     global maintenance_mode
     maintenance_mode = True
-    await message.reply("Технічні роботи увімкнено. Бот призупинено.")
-    logger.debug("Maintenance mode enabled")
+    await message.reply("Технічні роботи увімкнено. Доступ обмежено для всіх, крім адмінів.")
+    logger.info("Maintenance mode enabled")
 
-# Вимкнення технічних робіт
 @dp.message(Command("maintenance_off"))
 async def maintenance_off(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    logger.debug(f"Received /maintenance_off from user {user_id}")
+    logger.debug(f"Received /maintenance_off from user {message.from_user.id}")
     await reset_state(message, state)
-    if user_id not in ADMIN_IDS:
-        await message.reply("Доступ заборонено!")
-        logger.debug(f"Access denied for /maintenance_off for user {user_id}")
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("У тебе немає доступу до цієї команди!")
+        logger.debug(f"Unauthorized /maintenance_off attempt by user {message.from_user.id}")
         return
     global maintenance_mode
     maintenance_mode = False
-    await message.reply("Технічні роботи вимкнено. Бот активний.")
-    logger.debug("Maintenance mode disabled")
+    await message.reply("Технічні роботи вимкнено. Бот доступний для всіх.")
+    logger.info("Maintenance mode disabled")
 
-# Health check для UptimeRobot
-async def health(request):
-    logger.debug("Received /health request")
-    return web.json_response({"status": "ok"})
+# Налаштування вебхука
+async def on_startup():
+    await setup_bot_commands()
+    webhook_url = f"https://box-manager-bot.onrender.com/webhook/{TELEGRAM_TOKEN}"
+    await bot.set_webhook(webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
 
-# Webhook endpoint
-async def webhook(request):
-    logger.debug("Received webhook request")
-    try:
-        data = await request.json()
-        logger.debug(f"Webhook data: {data}")
-        update = types.Update(**data)
-        await dp.feed_update(bot, update)
-        logger.debug("Update processed successfully")
-        return web.json_response({"ok": True})
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return web.json_response({"ok": False}, status=500)
+async def on_shutdown():
+    await bot.delete_webhook()
+    await storage.close()
+    await bot.session.close()
+    logger.info("Bot shutdown")
 
-# Налаштування aiohttp
-app = web.Application()
-app.router.add_get("/health", health)
-app.router.add_post("/webhook", webhook)
+# Обробка вебхука
+async def handle_webhook(request):
+    update = types.Update(**(await request.json()))
+    await dp.feed_update(bot, update)
+    return web.Response()
 
-# Асинхронна функція для запуску
+# Запуск бота
 async def main():
-    logger.info("Starting bot...")
-    try:
-        async with bot.session:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook disabled successfully")
-            bot_info = await bot.get_me()
-            logger.info(f"Bot info: {bot_info}")
-            webhook_url = "https://boxmanagerbot.onrender.com/webhook"
-            await bot.set_webhook(url=webhook_url)
-            logger.info(f"Webhook set to {webhook_url}")
-            await setup_bot_commands()
-            logger.info("Bot commands set up successfully")
-    except Exception as e:
-        logger.error(f"Failed to set webhook or commands: {e}")
-        raise
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-    port = int(os.environ.get("PORT", 10000))
-    web.run_app(app, host="0.0.0.0", port=port)
+    app = web.Application()
+    app.router.add_post(f"/webhook/{TELEGRAM_TOKEN}", handle_webhook)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))

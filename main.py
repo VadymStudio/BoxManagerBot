@@ -1,8 +1,15 @@
 # Встановлення залежностей:
-# Виконайте наступну команду в терміналі, щоб встановити необхідні бібліотеки:
-# pip install aiogram==3.13.1 aiohttp python-dotenv
-# Якщо використовуєте віртуальне середовище, переконайтеся, що воно активоване.
-# У VS Code виберіть правильний інтерпретатор Python (Ctrl+Shift+P -> Python: Select Interpreter).
+# 1. Відкрийте термінал у папці проєкту.
+# 2. Якщо використовуєте віртуальне середовище, активуйте його:
+#    Windows: .\venv\Scripts\activate
+#    Linux/Mac: source venv/bin/activate
+# 3. Встановіть необхідні бібліотеки:
+#    pip install aiogram==3.13.1 aiohttp python-dotenv
+# 4. У VS Code виберіть правильний інтерпретатор Python:
+#    Ctrl+Shift+P -> Python: Select Interpreter -> виберіть інтерпретатор із встановленими бібліотеками.
+# 5. Якщо помилки імпорту зберігаються, переконайтеся, що Pylance використовує правильне середовище:
+#    У файлі settings.json (Ctrl+Shift+P -> Preferences: Open Settings (JSON)) додайте:
+#    "python.analysis.extraPaths": ["./venv/lib/python3.x/site-packages"]
 
 import logging
 import os
@@ -972,8 +979,7 @@ async def handle_knockdown(match_id, player_id, opponent_id, player_name, oppone
         await end_match(match_id, None, None, p1_health, p2_health)
     finally:
         conn.close()
-
-# Обробка раунду
+        # Обробка раунду
 async def process_round(match_id, timed_out=False):
     conn = sqlite3.connect("bot.db")
     try:
@@ -987,6 +993,10 @@ async def process_round(match_id, timed_out=False):
         if not match:
             logger.error(f"Match {match_id} not found for process_round")
             return
+    except sqlite3.Error as e:
+        logger.error(f"Database error processing round for match {match_id}: {e}")
+    finally:
+        conn.close()    
         player1_id, player2_id, p1_action, p2_action, p1_health, p1_stamina, p2_health, p2_stamina, round_num, start_time, distance = match
         
         c.execute("SELECT character_name, fighter_type FROM users WHERE user_id = ?", (player1_id,))
@@ -1282,31 +1292,3 @@ async def process_round(match_id, timed_out=False):
                     p2_action_result = "Ти влучив!"
                     p1_action_result = "Ухилення не вдалося!"
                     logger.debug(f"Player 1 failed dodge, damage: {damage:.1f}, stamina: {damage/10:.1f}")
-        
-        # Обмеження стамини
-        p1_stamina = max(0, min(p1_stamina, 100))
-        p2_stamina = max(0, min(p2_stamina, 100))
-        
-        # Перевірка нокдауну
-        if p1_health <= 0:
-            await end_match(match_id, player1_id, player2_id, p1_health, p2_health)
-            result_text += f"{p1_name} зазнав нокауту! {p2_name} перемагає!\n"
-            logger.debug(f"Player 1 ({p1_name}) knocked out in match {match_id}")
-            await bot.send_message(player1_id, result_text)
-            await bot.send_message(player2_id, result_text)
-            return
-        elif p2_health <= 0:
-            await end_match(match_id, player2_id, player1_id, p1_health, p2_health)
-            result_text += f"{p2_name} зазнав нокауту! {p1_name} перемагає!\n"
-            logger.debug(f"Player 2 ({p2_name}) knocked out in match {match_id}")
-            await bot.send_message(player1_id, result_text)
-            await bot.send_message(player2_id, result_text)
-            return
-        elif p1_health < 0.2 * p1_max_health and random.random() < 0.4:
-            result_text += f"{p1_name} у нокдауні!\n"
-            c.execute(
-                "INSERT INTO knockdowns (match_id, player_id, deadline) VALUES (?, ?, ?)",
-                (match_id, player1_id, time.time() + 10)
-            )
-            conn.commit()
-            await bot.send
